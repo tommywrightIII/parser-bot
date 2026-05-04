@@ -14,7 +14,7 @@ from config import PROXY_URL
 router = Router()
 _shown_items: dict = {}
 _cancelled: set = set()
-_last_search: dict = {}  # user_id -> last search params
+_last_search: dict = {}
 
 PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
@@ -125,13 +125,10 @@ def results_count_keyboard(show_all=False):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ——— Команды ———
-
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "👟 <b>Resale Parser Bot</b>\n\n"
-        "Выбери действие:",
+        "👟 <b>Resale Parser Bot</b>\n\nВыбери действие:",
         reply_markup=main_keyboard(),
         parse_mode="HTML"
     )
@@ -157,8 +154,6 @@ async def cmd_stop(message: Message, state: FSMContext):
     await message.answer("⛔ Поиск остановлен.", reply_markup=main_keyboard())
 
 
-# ——— Главное меню ———
-
 @router.callback_query(F.data == "goto_search")
 async def goto_search(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -170,8 +165,6 @@ async def goto_search(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchForm.choosing_search_type)
     await callback.answer()
 
-
-# ——— Тип поиска ———
 
 @router.callback_query(SearchForm.choosing_search_type, F.data == "stype_category")
 async def stype_category(callback: CallbackQuery, state: FSMContext):
@@ -197,8 +190,6 @@ async def stype_query(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ——— Платформа ———
-
 @router.callback_query(SearchForm.choosing_platform, F.data.startswith("platform_"))
 async def process_platform(callback: CallbackQuery, state: FSMContext):
     platform = callback.data.replace("platform_", "")
@@ -223,16 +214,12 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ——— Запрос ———
-
 @router.message(SearchForm.entering_query)
 async def process_query(message: Message, state: FSMContext):
     await state.update_data(query=message.text.strip())
     await message.answer("📐 Укажи размер (или пропусти):", reply_markup=skip_keyboard())
     await state.set_state(SearchForm.entering_size)
 
-
-# ——— Категории ———
 
 @router.callback_query(SearchForm.choosing_category, F.data.startswith("catgroup_"))
 async def process_category_group(callback: CallbackQuery, state: FSMContext):
@@ -279,8 +266,6 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchForm.entering_size)
     await callback.answer()
 
-
-# ——— Фильтры ———
 
 @router.message(SearchForm.entering_size)
 async def process_size(message: Message, state: FSMContext):
@@ -369,13 +354,11 @@ async def process_count(callback: CallbackQuery, state: FSMContext):
     raw = callback.data.replace("count_", "")
     count = 9999 if raw == "all" else int(raw)
     label = "все за час" if count == 9999 else str(count)
+    await callback.answer()
     await state.update_data(result_count=count)
     await callback.message.edit_text(f"📊 Результатов: <b>{label}</b>", parse_mode="HTML")
     await _run_search(callback.message, state)
-    await callback.answer()
 
-
-# ——— Основной поиск ———
 
 async def _run_search(message: Message, state: FSMContext):
     data = await state.get_data()
