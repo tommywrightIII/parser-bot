@@ -1,12 +1,16 @@
 import asyncio
-import json
 import os
 import re
+import subprocess
 import traceback
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from playwright.async_api import async_playwright
+
+
+result = subprocess.run(["find", "/root/.cache/ms-playwright", "-name", "chrome", "-type", "f"], capture_output=True, text=True)
+print(f"[Mercari] Chromium path: {result.stdout.strip() or 'НЕ НАЙДЕН'}")
 
 
 @dataclass
@@ -90,6 +94,7 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
             browser = await p.chromium.launch(
                 headless=True,
                 proxy=proxy_config,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
             print("[Mercari] Браузер запущен")
             context = await browser.new_context(
@@ -121,11 +126,11 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                 url += f"&price_max={max_price}"
 
             print(f"[Mercari] Открываем: {url}")
-            await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            await page.goto(url, timeout=60000, wait_until="commit")
             print("[Mercari] Страница загружена, ждём API...")
 
             try:
-                items = await asyncio.wait_for(api_future, timeout=25)
+                items = await asyncio.wait_for(api_future, timeout=30)
                 print(f"[Mercari] Получено: {len(items)}")
 
                 for item in items[:limit]:
