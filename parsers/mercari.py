@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from typing import Optional
 from datetime import datetime
@@ -78,11 +79,15 @@ def _format_date(dt: Optional[datetime]) -> str:
 async def search_mercari(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
     results = []
 
+    proxy_url = os.environ.get("PROXY_URL")
+    print(f"[Mercari] Запуск поиска: {query}, прокси: {proxy_url}")
+    proxy_config = {"server": proxy_url} if proxy_url else None
+
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                proxy={"server": "http://127.0.0.1:8899"},
+                proxy=proxy_config,
             )
             context = await browser.new_context(
                 locale="ja-JP",
@@ -123,7 +128,6 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                     thumbs = item.get("thumbnails", [])
                     name = item.get("name", "")
 
-                    # Размер: сначала из API, потом из названия
                     item_size = None
                     sizes = item.get("itemSizes", [])
                     if sizes:
@@ -131,7 +135,6 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                     if not item_size:
                         item_size = _extract_size_from_name(name)
 
-                    # Дата
                     created_at = _parse_date(item.get("created", item.get("createdTime")))
 
                     results.append(MercariItem(
