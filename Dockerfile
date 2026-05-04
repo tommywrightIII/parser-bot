@@ -1,7 +1,5 @@
 FROM python:3.11-slim
-
 ARG CACHEBUST=1
-
 RUN apt-get update && apt-get install -y \
     wget curl gnupg \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 \
@@ -10,10 +8,9 @@ RUN apt-get update && apt-get install -y \
     libasound2t64 libpango-1.0-0 libcairo2 \
     fonts-liberation fonts-unifont \
     && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-RUN playwright install chromium
+RUN playwright install chromium --with-deps
 COPY . .
 CMD ["python", "bot.py"]
