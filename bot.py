@@ -25,7 +25,7 @@ async def main():
         r = httpx.get("https://api.ipify.org")
         logging.info(f"Railway IP: {r.text}")
     except Exception as e:
-        logging.info(f"IP error: {e}")
+        logging.error(f"IP error: {e}")
     asyncio.create_task(tracking_loop(bot))
     await dp.start_polling(bot, skip_updates=True)
 
