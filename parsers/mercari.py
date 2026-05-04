@@ -1,16 +1,12 @@
 import asyncio
+import logging
 import os
 import re
-import subprocess
 import traceback
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from playwright.async_api import async_playwright
-
-
-result = subprocess.run(["find", "/root/.cache/ms-playwright", "-name", "chrome", "-type", "f"], capture_output=True, text=True)
-print(f"[Mercari] Chromium path: {result.stdout.strip() or 'НЕ НАЙДЕН'}")
 
 
 @dataclass
@@ -85,18 +81,18 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
     results = []
 
     proxy_url = os.environ.get("PROXY_URL")
-    print(f"[Mercari] Запуск поиска: {query}, прокси: {proxy_url}")
+    logging.info(f"[Mercari] Запуск поиска: {query}, прокси: {proxy_url}")
     proxy_config = {"server": proxy_url} if proxy_url else None
 
     try:
         async with async_playwright() as p:
-            print("[Mercari] Запускаем браузер...")
+            logging.info("[Mercari] Запускаем браузер...")
             browser = await p.chromium.launch(
                 headless=True,
                 proxy=proxy_config,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            print("[Mercari] Браузер запущен")
+            logging.info("[Mercari] Браузер запущен")
             context = await browser.new_context(
                 locale="ja-JP",
                 user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
@@ -125,13 +121,13 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
             if max_price < 999999:
                 url += f"&price_max={max_price}"
 
-            print(f"[Mercari] Открываем: {url}")
+            logging.info(f"[Mercari] Открываем: {url}")
             await page.goto(url, timeout=60000, wait_until="commit")
-            print("[Mercari] Страница загружена, ждём API...")
+            logging.info("[Mercari] Страница загружена, ждём API...")
 
             try:
                 items = await asyncio.wait_for(api_future, timeout=30)
-                print(f"[Mercari] Получено: {len(items)}")
+                logging.info(f"[Mercari] Получено: {len(items)}")
 
                 for item in items[:limit]:
                     thumbs = item.get("thumbnails", [])
@@ -159,15 +155,15 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                         created_at=created_at,
                     ))
             except asyncio.TimeoutError:
-                print("[Mercari] Таймаут ожидания API — сайт не вернул данные")
+                logging.info("[Mercari] Таймаут ожидания API — сайт не вернул данные")
 
             await browser.close()
 
     except Exception as e:
-        print(f"[Mercari] Ошибка: {e}")
-        print(traceback.format_exc())
+        logging.error(f"[Mercari] Ошибка: {e}")
+        logging.error(traceback.format_exc())
 
-    print(f"[Mercari] Найдено: {len(results)}")
+    logging.info(f"[Mercari] Найдено: {len(results)}")
     return results
 
 
