@@ -78,82 +78,48 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
     logging.info(f"[Mercari] Поиск: {query}")
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Accept": "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Accept": "application/json",
         "Accept-Language": "ja-JP,ja;q=0.9",
+        "Origin": "https://jp.mercari.com",
+        "Referer": "https://jp.mercari.com/",
         "X-Platform": "web",
-        "DPoP-Nonce": "",
     }
 
+    url = "https://api.mercari.jp/items/get_items"
     params = {
         "keyword": query,
         "status": "on_sale",
-        "sort": "created_time",
-        "order": "desc",
+        "sort_order": "created_time_desc",
         "limit": min(limit * 2, 100),
-        "offset": 0,
     }
 
     if min_price > 0:
         params["price_min"] = min_price
     if max_price < 999999:
         params["price_max"] = max_price
-    if category_id:
-        params["category_id"] = category_id
-
-    url = "https://api.mercari.jp/v2/entities:search"
 
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(url, json={
-                "userId": "",
-                "pageToken": "",
-                "searchSessionId": "",
-                "indexRouting": "INDEX_ROUTING_UNSPECIFIED",
-                "thumbnailTypes": [],
-                "searchCondition": {
-                    "keyword": query,
-                    "excludeKeyword": "",
-                    "sort": "SORT_CREATED_TIME",
-                    "order": "ORDER_DESC",
-                    "status": ["STATUS_ON_SALE"],
-                    "categoryId": [category_id] if category_id else [],
-                    "priceMin": min_price,
-                    "priceMax": max_price if max_price < 999999 else 0,
-                },
-                "defaultDatasets": ["DATASET_TYPE_MERCARI"],
-                "serviceFrom": "suruga",
-                "withItemBrand": True,
-                "withItemSize": True,
-                "withItemPromotions": False,
-                "withItemSizes": True,
-                "fetchCartItems": False,
-            }, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 logging.info(f"[Mercari] API статус: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json()
-                    items = data.get("items", [])
+                    items = data.get("data", [])
                     logging.info(f"[Mercari] Получено: {len(items)}")
 
                     for item in items[:limit]:
                         name = item.get("name", "")
-                        item_size = None
-                        sizes = item.get("itemSizes", [])
-                        if sizes:
-                            item_size = sizes[0].get("name")
-                        if not item_size:
-                            item_size = _extract_size_from_name(name)
-
-                        thumbs = item.get("thumbnails", [])
-                        created_at = _parse_date(item.get("created", item.get("createdTime")))
+                        item_size = _extract_size_from_name(name)
+                        created_at = _parse_date(item.get("created"))
 
                         results.append(MercariItem(
-                            id=item.get("id", ""),
+                            id=str(item.get("id", "")),
                             name=name,
                             price=int(item.get("price", 0)),
-                            condition=COND_LABELS.get(str(item.get("itemConditionId", "")), "Не указано"),
+                            condition=COND_LABELS.get(str(item.get("item_condition_id", "")), "Не указано"),
                             size=item_size,
-                            image_url=thumbs[0] if thumbs else "",
+                            image_url=item.get("thumbnails", [""])[0] if item.get("thumbnails") else item.get("photo_url", ""),
                             url=f"https://jp.mercari.com/item/{item.get('id', '')}",
                             seller=item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else "",
                             status="В продаже",
@@ -161,7 +127,7 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                         ))
                 else:
                     text = await resp.text()
-                    logging.error(f"[Mercari] Ошибка API: {resp.status} — {text[:200]}")
+                    logging.error(f"[Mercari] Ошибка: {resp.status} — {text[:200]}")
 
     except Exception as e:
         logging.error(f"[Mercari] Ошибка: {e}")
