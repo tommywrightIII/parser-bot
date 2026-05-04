@@ -95,7 +95,11 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
             logging.info("[Mercari] Браузер запущен")
             context = await browser.new_context(
                 locale="ja-JP",
-                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                extra_http_headers={
+                    "Accept-Language": "ja-JP,ja;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
             )
 
             api_future = asyncio.get_event_loop().create_future()
@@ -105,10 +109,13 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                     try:
                         data = await response.json()
                         items = data.get("items", [])
+                        logging.info(f"[Mercari] API ответил, items: {len(items)}")
                         if items and not api_future.done():
                             api_future.set_result(items)
-                    except:
-                        pass
+                    except Exception as e:
+                        logging.error(f"[Mercari] Ошибка парсинга API: {e}")
+                elif "mercari" in response.url and response.status != 200:
+                    logging.info(f"[Mercari] Ответ {response.status}: {response.url[:80]}")
 
             page = await context.new_page()
             page.on("response", handle_response)
@@ -126,7 +133,7 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
             logging.info("[Mercari] Страница загружена, ждём API...")
 
             try:
-                items = await asyncio.wait_for(api_future, timeout=30)
+                items = await asyncio.wait_for(api_future, timeout=45)
                 logging.info(f"[Mercari] Получено: {len(items)}")
 
                 for item in items[:limit]:
