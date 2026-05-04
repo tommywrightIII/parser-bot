@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import traceback
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -85,10 +86,12 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
 
     try:
         async with async_playwright() as p:
+            print("[Mercari] Запускаем браузер...")
             browser = await p.chromium.launch(
                 headless=True,
                 proxy=proxy_config,
             )
+            print("[Mercari] Браузер запущен")
             context = await browser.new_context(
                 locale="ja-JP",
                 user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
@@ -119,6 +122,7 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
 
             print(f"[Mercari] Открываем: {url}")
             await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            print("[Mercari] Страница загружена, ждём API...")
 
             try:
                 items = await asyncio.wait_for(api_future, timeout=25)
@@ -150,12 +154,13 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                         created_at=created_at,
                     ))
             except asyncio.TimeoutError:
-                print("[Mercari] Таймаут ожидания API")
+                print("[Mercari] Таймаут ожидания API — сайт не вернул данные")
 
             await browser.close()
 
     except Exception as e:
         print(f"[Mercari] Ошибка: {e}")
+        print(traceback.format_exc())
 
     print(f"[Mercari] Найдено: {len(results)}")
     return results
