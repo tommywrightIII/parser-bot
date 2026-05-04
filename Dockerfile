@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-RUN playwright install chromium --with-deps
+RUN playwright install chromium
+RUN playwright install-deps chromium
 COPY . .
 CMD ["python", "bot.py"]
