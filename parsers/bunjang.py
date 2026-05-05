@@ -66,36 +66,6 @@ async def _translate(text: str, dest: str) -> str:
         return text
 
 
-async def _get_item_details(session: aiohttp.ClientSession, item_id: str) -> dict:
-    urls = [
-        f"https://api.bunjang.co.kr/api/1/product/{item_id}",
-        f"https://api.bunjang.co.kr/api/prd/products/{item_id}",
-        f"https://api.bunjang.co.kr/api/1/products/{item_id}",
-    ]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Accept": "application/json",
-        "app_version": "6.0.0",
-        "os_version": "17.0",
-        "os": "ios",
-    }
-    for url in urls:
-        try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                logging.info(f"[Bunjang] Детали {item_id} ({url.split('/')[-2]}): статус {resp.status}")
-                if resp.status == 200:
-                    data = await resp.json()
-                    product = data.get("product", {})
-                    logging.info(f"[Bunjang] condition={product.get('condition')}, size={product.get('productSize')}")
-                    return {
-                        "condition": product.get("condition", ""),
-                        "size": product.get("productSize", {}).get("name", "") if product.get("productSize") else "",
-                    }
-        except Exception as e:
-            logging.warning(f"[Bunjang] Ошибка {url}: {e}")
-    return {"condition": "", "size": ""}
-
-
 async def search_bunjang(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
     results = []
 
@@ -142,17 +112,10 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
                 items = data.get("list", [])
                 logging.info(f"[Bunjang] Получено: {len(items)}")
 
-                items = items[:limit]
+                translate_tasks = [_translate(item.get("name", ""), 'en') for item in items[:limit]]
+                translated_names = await asyncio.gather(*translate_tasks)
 
-                detail_tasks = [_get_item_details(session, str(item.get("pid", ""))) for item in items]
-                translate_tasks = [_translate(item.get("name", ""), 'en') for item in items]
-
-                details_list, translated_names = await asyncio.gather(
-                    asyncio.gather(*detail_tasks),
-                    asyncio.gather(*translate_tasks)
-                )
-
-                for item, details, translated_name in zip(items, details_list, translated_names):
+                for item, translated_name in zip(items[:limit], translated_names):
                     price = int(item.get("price", 0) or 0)
                     if min_price > 0 and price < min_price:
                         continue
@@ -167,14 +130,13 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
                     if img and not img.startswith("http"):
                         img = f"https://media.bunjang.co.kr/product/{img}"
 
-                    item_condition = BUNJANG_CONDITIONS.get(details.get("condition", ""), "Не указано")
-                    item_size = details.get("size", "") or _extract_size(original_name)
+                    item_size = _extract_size(original_name)
 
                     results.append(BunjangItem(
                         id=item_id,
                         name=display_name,
                         price=price,
-                        condition=item_condition,
+                        condition="Не указано",
                         size=item_size if item_size else None,
                         image_url=img,
                         url=f"https://m.bunjang.co.kr/products/{item_id}",
