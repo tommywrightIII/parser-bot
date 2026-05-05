@@ -1,4 +1,7 @@
 import asyncio
+import aiohttp
+import xml.etree.ElementTree as ET
+import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,11 +18,36 @@ router = Router()
 _shown_items: dict = {}
 _cancelled: set = set()
 _last_search: dict = {}
+_cached_rate = {"rate": 0.62, "date": None}
 
 PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
     "yahoo": "Yahoo Auctions 🇯🇵",
 }
+
+
+async def _get_yen_rate() -> float:
+    import datetime
+    today = datetime.date.today().isoformat()
+    if _cached_rate["date"] == today:
+        return _cached_rate["rate"]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://www.cbr.ru/scripts/XML_daily.asp", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                text = await resp.text(encoding="windows-1251")
+                root = ET.fromstring(text)
+                for valute in root.findall("Valute"):
+                    char_code = valute.find("CharCode")
+                    if char_code is not None and char_code.text == "JPY":
+                        value = valute.find("Value").text.replace(",", ".")
+                        nominal = int(valute.find("Nominal").text)
+                        rate = float(value) / nominal
+                        _cached_rate["rate"] = rate
+                        _cached_rate["date"] = today
+                        return rate
+    except Exception as e:
+        logging.warning(f"Ошибка получения курса ЦБ: {e}")
+    return _cached_rate["rate"]
 
 
 class SearchForm(StatesGroup):
@@ -295,7 +323,7 @@ async def process_condition(callback: CallbackQuery, state: FSMContext):
     await state.update_data(condition=condition)
     await callback.message.edit_text(f"🏷 Состояние: <b>{cond_labels.get(cond)}</b>", parse_mode="HTML")
     await callback.message.answer(
-        "💰 Укажи диапазон цен (или пропусти):\n<i>Формат: 3000-15000</i>",
+        "💰 Укажи диапазон цен в йенах (или пропусти):\n<i>Формат: 3000-15000</i>",
         reply_markup=skip_keyboard(), parse_mode="HTML"
     )
     await state.set_state(SearchForm.entering_price)
@@ -383,6 +411,8 @@ async def _run_search(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+    yen_rate = await _get_yen_rate()
+
     tasks, labels = [], []
     if platform == "mercari":
         tasks.append(search_mercari(query, min_price, max_price, condition, size, fetch_count, PROXY_URL, category_id=category_id))
@@ -429,17 +459,14 @@ async def _run_search(message: Message, state: FSMContext):
 
             _shown_items[user_id].add(item_uid)
 
-            text = _format_item(item, label)
+            text = _format_item(item, label, yen_rate)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://fril.jp")],
             ])
 
             if item.image_url:
                 try:
-                    import aiohttp
-                    from aiohttp_socks import ProxyConnector
-                    connector = ProxyConnector.from_url(PROXY_URL, ssl=False)
-                    async with aiohttp.ClientSession(connector=connector) as session:
+                    async with aiohttp.ClientSession() as session:
                         async with session.get(item.image_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                             if resp.status == 200:
                                 from aiogram.types import BufferedInputFile
@@ -466,13 +493,13 @@ async def _run_search(message: Message, state: FSMContext):
         )
 
 
-def _format_item(item, platform: str) -> str:
+def _format_item(item, platform: str, yen_rate: float = 0.62) -> str:
     platform_icons = {"mercari": "🇯🇵 Mercari", "yahoo": "🇯🇵 Yahoo"}
-    currency = {"mercari": "¥", "yahoo": "¥"}
+    rub_price = int(item.price * yen_rate)
     lines = [
         f"<b>{platform_icons.get(platform, platform)}</b>",
         f"📦 <b>{item.name}</b>",
-        f"💴 <b>{currency.get(platform, '¥')}{item.price:,}</b>",
+        f"💴 <b>¥{item.price:,} / ~{rub_price:,}₽</b>",
         f"🏷 Состояние: {item.condition}",
     ]
     if item.size:
