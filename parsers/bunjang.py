@@ -77,10 +77,13 @@ async def _get_item_details(session: aiohttp.ClientSession, item_id: str) -> dic
             if resp.status == 200:
                 data = await resp.json()
                 product = data.get("product", {})
+                logging.info(f"[Bunjang] Детали {item_id}: condition={product.get('condition')}, size={product.get('productSize')}")
                 return {
                     "condition": product.get("condition", ""),
                     "size": product.get("productSize", {}).get("name", "") if product.get("productSize") else "",
                 }
+            else:
+                logging.warning(f"[Bunjang] Детали {item_id}: статус {resp.status}")
     except Exception as e:
         logging.warning(f"[Bunjang] Ошибка деталей {item_id}: {e}")
     return {"condition": "", "size": ""}
