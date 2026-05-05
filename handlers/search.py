@@ -289,11 +289,15 @@ async def process_bunjang_category(callback: CallbackQuery, state: FSMContext):
         await state.update_data(
             category_id=cat.get("id"),
             category_name=cat.get("name", ""),
-            query=""
+            query=cat.get("name", "")
         )
         await callback.message.edit_text(f"📂 Категория: <b>{cat.get('name', '')}</b>", parse_mode="HTML")
 
-    await callback.message.answer("🔎 Введи поисковый запрос:", parse_mode="HTML")
+    await callback.message.answer(
+        "🔎 Введи поисковый запрос (или пропусти):",
+        reply_markup=skip_keyboard(),
+        parse_mode="HTML"
+    )
     await state.set_state(SearchForm.entering_query)
     await callback.answer()
 
@@ -303,6 +307,14 @@ async def process_query(message: Message, state: FSMContext):
     await state.update_data(query=message.text.strip())
     await message.answer("📐 Укажи размер (или пропусти):", reply_markup=skip_keyboard())
     await state.set_state(SearchForm.entering_size)
+
+
+@router.callback_query(SearchForm.entering_query, F.data == "skip")
+async def skip_query(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🔎 Запрос: <b>любой</b>", parse_mode="HTML")
+    await callback.message.answer("📐 Укажи размер (или пропусти):", reply_markup=skip_keyboard())
+    await state.set_state(SearchForm.entering_size)
+    await callback.answer()
 
 
 @router.callback_query(SearchForm.choosing_category, F.data.startswith("catgroup_"))
