@@ -1,10 +1,12 @@
 import asyncio
 import logging
-import aiohttp
+import os
 import re
+import traceback
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
+from playwright.async_api import async_playwright
 
 
 @dataclass
@@ -75,62 +77,104 @@ def _format_date(dt: Optional[datetime]) -> str:
 async def search_mercari(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
     results = []
 
-    logging.info(f"[Mercari] Поиск: {query}")
+    proxy_url = os.environ.get("PROXY_URL")
+    logging.info(f"[Mercari] Запуск поиска: {query}, прокси: {proxy_url}")
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        "Accept": "application/json",
-        "Accept-Language": "ja-JP,ja;q=0.9",
-        "Origin": "https://jp.mercari.com",
-        "Referer": "https://jp.mercari.com/",
-        "X-Platform": "web",
-    }
-
-    url = "https://api.mercari.jp/items/get_items"
-    params = {
-        "keyword": query,
-        "status": "on_sale",
-        "sort_order": "created_time_desc",
-        "limit": min(limit * 2, 100),
-    }
-
-    if min_price > 0:
-        params["price_min"] = min_price
-    if max_price < 999999:
-        params["price_max"] = max_price
+    proxy_config = None
+    if proxy_url:
+        match = re.match(r'(https?|socks5)://([^:@]+):([^@]+)@([^:]+):(\d+)', proxy_url)
+        if match:
+            proto, user, password, host, port = match.groups()
+            proxy_config = {
+                "server": f"{proto}://{host}:{port}",
+                "username": user,
+                "password": password,
+            }
+        else:
+            proxy_config = {"server": proxy_url}
 
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                logging.info(f"[Mercari] API статус: {resp.status}")
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("data", [])
-                    logging.info(f"[Mercari] Получено: {len(items)}")
+        async with async_playwright() as p:
+            logging.info("[Mercari] Запускаем браузер...")
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy_config,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
+            logging.info("[Mercari] Браузер запущен")
+            context = await browser.new_context(
+                locale="ja-JP",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                extra_http_headers={
+                    "Accept-Language": "ja-JP,ja;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+            )
 
-                    for item in items[:limit]:
-                        name = item.get("name", "")
+            api_future = asyncio.get_event_loop().create_future()
+
+            async def handle_response(response):
+                if "entities:search" in response.url and response.status == 200:
+                    try:
+                        data = await response.json()
+                        items = data.get("items", [])
+                        logging.info(f"[Mercari] API ответил, items: {len(items)}")
+                        if items and not api_future.done():
+                            api_future.set_result(items)
+                    except Exception as e:
+                        logging.error(f"[Mercari] Ошибка парсинга API: {e}")
+                elif "mercari" in response.url and response.status not in [200, 301, 302, 304]:
+                    logging.info(f"[Mercari] Ответ {response.status}: {response.url[:80]}")
+
+            page = await context.new_page()
+            page.on("response", handle_response)
+
+            url = f"https://jp.mercari.com/search?keyword={query}&status=on_sale&sort=created_time&order=desc"
+            if category_id:
+                url += f"&categoryId={category_id}"
+            if min_price > 0:
+                url += f"&price_min={min_price}"
+            if max_price < 999999:
+                url += f"&price_max={max_price}"
+
+            logging.info(f"[Mercari] Открываем: {url}")
+            await page.goto(url, timeout=60000, wait_until="commit")
+            logging.info("[Mercari] Страница загружена, ждём API...")
+
+            try:
+                items = await asyncio.wait_for(api_future, timeout=45)
+                logging.info(f"[Mercari] Получено: {len(items)}")
+
+                for item in items[:limit]:
+                    thumbs = item.get("thumbnails", [])
+                    name = item.get("name", "")
+                    item_size = None
+                    sizes = item.get("itemSizes", [])
+                    if sizes:
+                        item_size = sizes[0].get("name")
+                    if not item_size:
                         item_size = _extract_size_from_name(name)
-                        created_at = _parse_date(item.get("created"))
+                    created_at = _parse_date(item.get("created", item.get("createdTime")))
+                    results.append(MercariItem(
+                        id=item.get("id", ""),
+                        name=name,
+                        price=int(item.get("price", 0)),
+                        condition=COND_LABELS.get(str(item.get("itemConditionId", "")), "Не указано"),
+                        size=item_size,
+                        image_url=thumbs[0] if thumbs else "",
+                        url=f"https://jp.mercari.com/item/{item.get('id', '')}",
+                        seller=item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else "",
+                        status="В продаже",
+                        created_at=created_at,
+                    ))
+            except asyncio.TimeoutError:
+                logging.info("[Mercari] Таймаут ожидания API")
 
-                        results.append(MercariItem(
-                            id=str(item.get("id", "")),
-                            name=name,
-                            price=int(item.get("price", 0)),
-                            condition=COND_LABELS.get(str(item.get("item_condition_id", "")), "Не указано"),
-                            size=item_size,
-                            image_url=item.get("thumbnails", [""])[0] if item.get("thumbnails") else item.get("photo_url", ""),
-                            url=f"https://jp.mercari.com/item/{item.get('id', '')}",
-                            seller=item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else "",
-                            status="В продаже",
-                            created_at=created_at,
-                        ))
-                else:
-                    text = await resp.text()
-                    logging.error(f"[Mercari] Ошибка: {resp.status} — {text[:200]}")
+            await browser.close()
 
     except Exception as e:
         logging.error(f"[Mercari] Ошибка: {e}")
+        logging.error(traceback.format_exc())
 
     logging.info(f"[Mercari] Найдено: {len(results)}")
     return results
