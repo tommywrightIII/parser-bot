@@ -11,7 +11,7 @@ from aiogram.filters import Command
 
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
-from parsers.bunjang import search_bunjang, BunjangItem
+from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -74,6 +74,7 @@ class SearchForm(StatesGroup):
     choosing_platform = State()
     entering_query = State()
     choosing_category = State()
+    choosing_bunjang_category = State()
     entering_size = State()
     entering_condition = State()
     entering_price = State()
@@ -121,6 +122,14 @@ def category_keyboard(group_name: str):
     if row:
         buttons.append(row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def bunjang_category_keyboard():
+    buttons = []
+    for key, val in BUNJANG_CATEGORIES.items():
+        buttons.append([InlineKeyboardButton(text=val["name"], callback_data=f"bcat_{key}")])
+    buttons.append([InlineKeyboardButton(text="⏭ Все категории", callback_data="bcat_skip")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -246,7 +255,14 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     pname = PLATFORM_NAMES.get(platform, platform)
 
-    if mode == "category" and platform != "bunjang":
+    if platform == "bunjang" and mode == "category":
+        await callback.message.edit_text(
+            f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
+            reply_markup=bunjang_category_keyboard(),
+            parse_mode="HTML"
+        )
+        await state.set_state(SearchForm.choosing_bunjang_category)
+    elif mode == "category" and platform != "bunjang":
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
             reply_markup=category_group_keyboard(),
@@ -259,6 +275,26 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(SearchForm.entering_query)
+    await callback.answer()
+
+
+@router.callback_query(SearchForm.choosing_bunjang_category, F.data.startswith("bcat_"))
+async def process_bunjang_category(callback: CallbackQuery, state: FSMContext):
+    key = callback.data.replace("bcat_", "")
+    if key == "skip":
+        await state.update_data(category_id=None, category_name="", query="")
+        await callback.message.edit_text("📂 Категория: <b>все</b>", parse_mode="HTML")
+    else:
+        cat = BUNJANG_CATEGORIES.get(key, {})
+        await state.update_data(
+            category_id=cat.get("id"),
+            category_name=cat.get("name", ""),
+            query=""
+        )
+        await callback.message.edit_text(f"📂 Категория: <b>{cat.get('name', '')}</b>", parse_mode="HTML")
+
+    await callback.message.answer("🔎 Введи поисковый запрос:", parse_mode="HTML")
+    await state.set_state(SearchForm.entering_query)
     await callback.answer()
 
 
@@ -442,7 +478,7 @@ async def _run_search(message: Message, state: FSMContext):
         tasks.append(search_yahoo(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
         labels.append("yahoo")
     elif platform == "bunjang":
-        tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count))
+        tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
 
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
