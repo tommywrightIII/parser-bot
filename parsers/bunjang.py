@@ -5,7 +5,7 @@ import aiohttp
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 
 @dataclass
@@ -57,11 +57,10 @@ def _is_korean(text: str) -> bool:
 
 async def _translate(text: str, dest: str) -> str:
     try:
-        translator = Translator()
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: translator.translate(text, dest=dest)
+            None, lambda: GoogleTranslator(source='auto', target=dest).translate(text)
         )
-        return result.text
+        return result
     except Exception as e:
         logging.warning(f"[Bunjang] Ошибка перевода: {e}")
         return text
@@ -135,7 +134,6 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
 
                 items = items[:limit]
 
-                # Параллельно получаем детали и переводим названия
                 detail_tasks = [_get_item_details(session, str(item.get("pid", ""))) for item in items]
                 translate_tasks = [_translate(item.get("name", ""), 'en') for item in items]
 
