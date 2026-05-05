@@ -5,6 +5,7 @@ import aiohttp
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
+from googletrans import Translator
 
 
 @dataclass
@@ -29,8 +30,33 @@ def _extract_size(name):
     return None
 
 
+def _is_korean(text: str) -> bool:
+    for ch in text:
+        if '\uac00' <= ch <= '\ud7a3':
+            return True
+    return False
+
+
+async def _translate_to_korean(query: str) -> str:
+    if _is_korean(query):
+        return query
+    try:
+        translator = Translator()
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: translator.translate(query, dest='ko')
+        )
+        translated = result.text
+        logging.info(f"[Bunjang] Перевод: {query} → {translated}")
+        return translated
+    except Exception as e:
+        logging.warning(f"[Bunjang] Ошибка перевода: {e}")
+        return query
+
+
 async def search_bunjang(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None):
     results = []
+
+    translated_query = await _translate_to_korean(query)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
@@ -41,7 +67,7 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
     }
 
     params = {
-        "q": query,
+        "q": translated_query,
         "page": 0,
         "n": limit * 2,
         "order": "date",
@@ -55,7 +81,7 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
     url = "https://api.bunjang.co.kr/api/1/find_v2.json"
 
     try:
-        logging.info(f"[Bunjang] Поиск: {query}")
+        logging.info(f"[Bunjang] Поиск: {query} → {translated_query}")
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 logging.info(f"[Bunjang] API статус: {resp.status}")
