@@ -67,25 +67,32 @@ async def _translate(text: str, dest: str) -> str:
 
 
 async def _get_item_details(session: aiohttp.ClientSession, item_id: str) -> dict:
-    url = f"https://api.bunjang.co.kr/api/1/product/{item_id}"
+    urls = [
+        f"https://api.bunjang.co.kr/api/1/product/{item_id}",
+        f"https://api.bunjang.co.kr/api/prd/products/{item_id}",
+        f"https://api.bunjang.co.kr/api/1/products/{item_id}",
+    ]
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
         "Accept": "application/json",
+        "app_version": "6.0.0",
+        "os_version": "17.0",
+        "os": "ios",
     }
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                product = data.get("product", {})
-                logging.info(f"[Bunjang] Детали {item_id}: condition={product.get('condition')}, size={product.get('productSize')}")
-                return {
-                    "condition": product.get("condition", ""),
-                    "size": product.get("productSize", {}).get("name", "") if product.get("productSize") else "",
-                }
-            else:
-                logging.warning(f"[Bunjang] Детали {item_id}: статус {resp.status}")
-    except Exception as e:
-        logging.warning(f"[Bunjang] Ошибка деталей {item_id}: {e}")
+    for url in urls:
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                logging.info(f"[Bunjang] Детали {item_id} ({url.split('/')[-2]}): статус {resp.status}")
+                if resp.status == 200:
+                    data = await resp.json()
+                    product = data.get("product", {})
+                    logging.info(f"[Bunjang] condition={product.get('condition')}, size={product.get('productSize')}")
+                    return {
+                        "condition": product.get("condition", ""),
+                        "size": product.get("productSize", {}).get("name", "") if product.get("productSize") else "",
+                    }
+        except Exception as e:
+            logging.warning(f"[Bunjang] Ошибка {url}: {e}")
     return {"condition": "", "size": ""}
 
 
