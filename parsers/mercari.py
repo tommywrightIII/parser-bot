@@ -7,7 +7,7 @@ from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from playwright.async_api import async_playwright
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 
 @dataclass
@@ -86,13 +86,11 @@ async def _translate_to_japanese(query: str) -> str:
     if _is_japanese(query):
         return query
     try:
-        translator = Translator()
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: translator.translate(query, dest='ja')
+            None, lambda: GoogleTranslator(source='auto', target='ja').translate(query)
         )
-        translated = result.text
-        logging.info(f"[Mercari] Перевод: {query} → {translated}")
-        return translated
+        logging.info(f"[Mercari] Перевод: {query} → {result}")
+        return result
     except Exception as e:
         logging.warning(f"[Mercari] Ошибка перевода: {e}")
         return query
