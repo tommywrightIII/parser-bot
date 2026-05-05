@@ -11,6 +11,7 @@ from aiogram.filters import Command
 
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
+from parsers.bunjang import search_bunjang, BunjangItem
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -23,6 +24,7 @@ _cached_rate = {"rate": 0.62, "date": None}
 PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
     "yahoo": "Yahoo Auctions 🇯🇵",
+    "bunjang": "Bunjang 🇰🇷",
 }
 
 
@@ -48,6 +50,23 @@ async def _get_yen_rate() -> float:
     except Exception as e:
         logging.warning(f"Ошибка получения курса ЦБ: {e}")
     return _cached_rate["rate"]
+
+
+async def _get_krw_rate() -> float:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://www.cbr.ru/scripts/XML_daily.asp", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                text = await resp.text(encoding="windows-1251")
+                root = ET.fromstring(text)
+                for valute in root.findall("Valute"):
+                    char_code = valute.find("CharCode")
+                    if char_code is not None and char_code.text == "KRW":
+                        value = valute.find("Value").text.replace(",", ".")
+                        nominal = int(valute.find("Nominal").text)
+                        return float(value) / nominal
+    except Exception as e:
+        logging.warning(f"Ошибка получения курса KRW: {e}")
+    return 0.067
 
 
 class SearchForm(StatesGroup):
@@ -78,6 +97,7 @@ def platform_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Mercari 🇯🇵", callback_data="platform_mercari")],
         [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
+        [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
     ])
 
 
@@ -226,7 +246,7 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     pname = PLATFORM_NAMES.get(platform, platform)
 
-    if mode == "category":
+    if mode == "category" and platform != "bunjang":
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
             reply_markup=category_group_keyboard(),
@@ -323,7 +343,7 @@ async def process_condition(callback: CallbackQuery, state: FSMContext):
     await state.update_data(condition=condition)
     await callback.message.edit_text(f"🏷 Состояние: <b>{cond_labels.get(cond)}</b>", parse_mode="HTML")
     await callback.message.answer(
-        "💰 Укажи диапазон цен в йенах (или пропусти):\n<i>Формат: 3000-15000</i>",
+        "💰 Укажи диапазон цен (или пропусти):\n<i>Для Bunjang в вонах (KRW), для Japan в йенах</i>",
         reply_markup=skip_keyboard(), parse_mode="HTML"
     )
     await state.set_state(SearchForm.entering_price)
@@ -412,6 +432,7 @@ async def _run_search(message: Message, state: FSMContext):
     )
 
     yen_rate = await _get_yen_rate()
+    krw_rate = await _get_krw_rate()
 
     tasks, labels = [], []
     if platform == "mercari":
@@ -420,6 +441,9 @@ async def _run_search(message: Message, state: FSMContext):
     elif platform == "yahoo":
         tasks.append(search_yahoo(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
         labels.append("yahoo")
+    elif platform == "bunjang":
+        tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count))
+        labels.append("bunjang")
 
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
     await status_msg.delete()
@@ -459,9 +483,11 @@ async def _run_search(message: Message, state: FSMContext):
 
             _shown_items[user_id].add(item_uid)
 
-            text = _format_item(item, label, yen_rate)
+            rate = krw_rate if label == "bunjang" else yen_rate
+            currency = "₩" if label == "bunjang" else "¥"
+            text = _format_item(item, label, rate, currency)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://fril.jp")],
+                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://bunjang.co.kr")],
             ])
 
             if item.image_url:
@@ -493,13 +519,13 @@ async def _run_search(message: Message, state: FSMContext):
         )
 
 
-def _format_item(item, platform: str, yen_rate: float = 0.62) -> str:
-    platform_icons = {"mercari": "🇯🇵 Mercari", "yahoo": "🇯🇵 Yahoo"}
-    rub_price = int(item.price * yen_rate)
+def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") -> str:
+    platform_icons = {"mercari": "🇯🇵 Mercari", "yahoo": "🇯🇵 Yahoo", "bunjang": "🇰🇷 Bunjang"}
+    rub_price = int(item.price * rate)
     lines = [
         f"<b>{platform_icons.get(platform, platform)}</b>",
         f"📦 <b>{item.name}</b>",
-        f"💴 <b>¥{item.price:,} / ~{rub_price:,}₽</b>",
+        f"💴 <b>{currency}{item.price:,} / ~{rub_price:,}₽</b>",
         f"🏷 Состояние: {item.condition}",
     ]
     if item.size:
