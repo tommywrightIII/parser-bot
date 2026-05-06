@@ -1,10 +1,13 @@
 import asyncio
+import logging
+import os
 import re
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+from deep_translator import GoogleTranslator
 
 
 @dataclass
@@ -37,40 +40,80 @@ def _extract_size(name: str) -> Optional[str]:
     return None
 
 
+def _is_japanese(text: str) -> bool:
+    for ch in text:
+        if '\u3040' <= ch <= '\u30ff' or '\u4e00' <= ch <= '\u9fff':
+            return True
+    return False
+
+
+async def _translate_to_japanese(query: str) -> str:
+    if _is_japanese(query):
+        return query
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: GoogleTranslator(source='auto', target='ja').translate(query)
+        )
+        logging.info(f"[Rakuma] Перевод: {query} → {result}")
+        return result
+    except Exception as e:
+        logging.warning(f"[Rakuma] Ошибка перевода: {e}")
+        return query
+
+
 async def search_rakuma(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
     results = []
+
+    translated_query = await _translate_to_japanese(query)
+
+    proxy_url = os.environ.get("PROXY_URL")
+    proxy_config = None
+    if proxy_url:
+        match = re.match(r'(https?|socks5)://([^:@]+):([^@]+)@([^:]+):(\d+)', proxy_url)
+        if match:
+            proto, user, password, host, port = match.groups()
+            proxy_config = {
+                "server": f"{proto}://{host}:{port}",
+                "username": user,
+                "password": password,
+            }
+        else:
+            proxy_config = {"server": proxy_url}
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                proxy={"server": "http://127.0.0.1:8899"},
+                proxy=proxy_config,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
             context = await browser.new_context(
                 locale="ja-JP",
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                extra_http_headers={
+                    "Accept-Language": "ja-JP,ja;q=0.9",
+                }
             )
 
             page = await context.new_page()
-            url = f"https://fril.jp/s?query={query}&sort=created_at&order=desc&status=selling"
+            url = f"https://fril.jp/s?query={translated_query}&sort=created_at&order=desc&status=selling"
             if min_price > 0:
                 url += f"&min_price={min_price}"
             if max_price < 999999:
                 url += f"&max_price={max_price}"
 
-            print(f"[Rakuma] Открываем: {url}")
-            await page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            await asyncio.sleep(1)
+            logging.info(f"[Rakuma] Открываем: {url}")
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
 
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
 
             cards = soup.select(".items__listItem")
-            print(f"[Rakuma] Карточек: {len(cards)}")
+            logging.info(f"[Rakuma] Карточек: {len(cards)}")
 
             for card in cards[:limit]:
                 try:
-                    # Ссылка и ID
                     link = card.select_one("a")
                     if not link:
                         continue
@@ -81,7 +124,6 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
                     item_id = match.group(1)
                     item_url = f"https://fril.jp{href}" if href.startswith("/") else href
 
-                    # Название из alt картинки
                     img = card.select_one("img")
                     name = ""
                     if img:
@@ -89,14 +131,12 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
                     if not name:
                         name = card.get_text(strip=True)[:50]
 
-                    # Цена
                     price_el = card.select_one("[class*='price'], [class*='Price']")
                     price = 0
                     if price_el:
                         price_text = price_el.get_text(strip=True)
                         price = int(re.sub(r"[^\d]", "", price_text) or "0")
 
-                    # Фото
                     img_url = ""
                     if img:
                         img_url = img.get("src", "") or img.get("data-src", "")
@@ -120,13 +160,15 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
                         status="В продаже",
                     ))
                 except Exception as e:
-                    print(f"[Rakuma] Ошибка карточки: {e}")
+                    logging.error(f"[Rakuma] Ошибка карточки: {e}")
                     continue
 
             await browser.close()
 
     except Exception as e:
-        print(f"[Rakuma] Ошибка: {e}")
+        logging.error(f"[Rakuma] Ошибка: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
 
-    print(f"[Rakuma] Найдено: {len(results)}")
+    logging.info(f"[Rakuma] Найдено: {len(results)}")
     return results
