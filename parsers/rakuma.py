@@ -6,7 +6,6 @@ from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from playwright.async_api import async_playwright
-from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 
 
@@ -106,62 +105,87 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
             await page.goto(url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            html = await page.content()
-            soup = BeautifulSoup(html, "html.parser")
+            items_data = await page.evaluate(f"""
+                () => {{
+                    const results = [];
+                    const selectors = [
+                        '.items__listItem',
+                        '[class*="item"]',
+                        'li[data-item-id]',
+                        '.sc-item',
+                        'article',
+                    ];
+                    
+                    let cards = [];
+                    for (const sel of selectors) {{
+                        cards = Array.from(document.querySelectorAll(sel)).slice(0, {limit * 2});
+                        if (cards.length > 2) break;
+                    }}
+                    
+                    console.log('Found cards:', cards.length, 'with selector');
+                    
+                    for (const card of cards) {{
+                        const a = card.querySelector('a[href*="/items/"]') || card.querySelector('a');
+                        const img = card.querySelector('img');
+                        const name = img ? img.getAttribute('alt') : '';
+                        const priceEl = card.querySelector('[class*="price"], [class*="Price"]');
+                        const price = priceEl ? priceEl.textContent.trim() : '0';
+                        
+                        if (a && a.href) {{
+                            results.push({{
+                                href: a.href,
+                                name: name || card.textContent.trim().slice(0, 50),
+                                price: price,
+                                img: img ? (img.src || img.getAttribute('data-src') || '') : '',
+                            }});
+                        }}
+                    }}
+                    return results;
+                }}
+            """)
 
-            cards = soup.select(".items__listItem")
-            logging.info(f"[Rakuma] Карточек: {len(cards)}")
+            logging.info(f"[Rakuma] Данных: {len(items_data)}")
 
-            for card in cards[:limit]:
-                try:
-                    link = card.select_one("a")
-                    if not link:
-                        continue
-                    href = link.get("href", "")
-                    match = re.search(r"/items/(\w+)", href)
-                    if not match:
-                        continue
-                    item_id = match.group(1)
-                    item_url = f"https://fril.jp{href}" if href.startswith("/") else href
+            for d in items_data:
+                href = d.get('href', '')
+                name = d.get('name', '')
+                img_url = d.get('img', '')
 
-                    img = card.select_one("img")
-                    name = ""
-                    if img:
-                        name = img.get("alt", "")
-                    if not name:
-                        name = card.get_text(strip=True)[:50]
-
-                    price_el = card.select_one("[class*='price'], [class*='Price']")
-                    price = 0
-                    if price_el:
-                        price_text = price_el.get_text(strip=True)
-                        price = int(re.sub(r"[^\d]", "", price_text) or "0")
-
-                    img_url = ""
-                    if img:
-                        img_url = img.get("src", "") or img.get("data-src", "")
-                        if img_url.startswith("//"):
-                            img_url = "https:" + img_url
-
-                    if min_price > 0 and price < min_price:
-                        continue
-                    if max_price < 999999 and price > max_price:
-                        continue
-
-                    results.append(RakumaItem(
-                        id=item_id,
-                        name=name,
-                        price=price,
-                        condition="Не указано",
-                        size=_extract_size(name),
-                        image_url=img_url,
-                        url=item_url,
-                        seller="",
-                        status="В продаже",
-                    ))
-                except Exception as e:
-                    logging.error(f"[Rakuma] Ошибка карточки: {e}")
+                if not href or not name:
                     continue
+
+                match = re.search(r'/items/(\w+)', href)
+                if not match:
+                    continue
+
+                item_id = match.group(1)
+                item_url = href
+
+                price_text = d.get('price', '0')
+                price = int(re.sub(r'[^\d]', '', price_text) or '0')
+
+                if min_price > 0 and price < min_price:
+                    continue
+                if max_price < 999999 and price > max_price:
+                    continue
+
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+
+                results.append(RakumaItem(
+                    id=item_id,
+                    name=name,
+                    price=price,
+                    condition="Не указано",
+                    size=_extract_size(name),
+                    image_url=img_url,
+                    url=item_url,
+                    seller="",
+                    status="В продаже",
+                ))
+
+                if len(results) >= limit:
+                    break
 
             await browser.close()
 
