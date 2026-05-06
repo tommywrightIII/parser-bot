@@ -105,87 +105,21 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
             await page.goto(url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            items_data = await page.evaluate(f"""
-                () => {{
-                    const results = [];
-                    const selectors = [
-                        '.items__listItem',
-                        '[class*="item"]',
-                        'li[data-item-id]',
-                        '.sc-item',
-                        'article',
-                    ];
-                    
-                    let cards = [];
-                    for (const sel of selectors) {{
-                        cards = Array.from(document.querySelectorAll(sel)).slice(0, {limit * 2});
-                        if (cards.length > 2) break;
-                    }}
-                    
-                    console.log('Found cards:', cards.length, 'with selector');
-                    
-                    for (const card of cards) {{
-                        const a = card.querySelector('a[href*="/items/"]') || card.querySelector('a');
-                        const img = card.querySelector('img');
-                        const name = img ? img.getAttribute('alt') : '';
-                        const priceEl = card.querySelector('[class*="price"], [class*="Price"]');
-                        const price = priceEl ? priceEl.textContent.trim() : '0';
-                        
-                        if (a && a.href) {{
-                            results.push({{
-                                href: a.href,
-                                name: name || card.textContent.trim().slice(0, 50),
-                                price: price,
-                                img: img ? (img.src || img.getAttribute('data-src') || '') : '',
-                            }});
-                        }}
-                    }}
-                    return results;
-                }}
+            debug_info = await page.evaluate("""
+                () => {
+                    const cards = Array.from(document.querySelectorAll('.items__listItem, [class*="item"], li, article')).slice(0, 3);
+                    return cards.map(card => ({
+                        tag: card.tagName,
+                        class: card.className,
+                        html: card.innerHTML.slice(0, 300),
+                        href: card.querySelector('a') ? card.querySelector('a').href : '',
+                        imgAlt: card.querySelector('img') ? card.querySelector('img').alt : '',
+                    }));
+                }
             """)
 
-            logging.info(f"[Rakuma] Данных: {len(items_data)}")
-
-            for d in items_data:
-                href = d.get('href', '')
-                name = d.get('name', '')
-                img_url = d.get('img', '')
-
-                if not href or not name:
-                    continue
-
-                match = re.search(r'/items/(\w+)', href)
-                if not match:
-                    continue
-
-                item_id = match.group(1)
-                item_url = href
-
-                price_text = d.get('price', '0')
-                price = int(re.sub(r'[^\d]', '', price_text) or '0')
-
-                if min_price > 0 and price < min_price:
-                    continue
-                if max_price < 999999 and price > max_price:
-                    continue
-
-                if img_url.startswith('//'):
-                    img_url = 'https:' + img_url
-
-                results.append(RakumaItem(
-                    id=item_id,
-                    name=name,
-                    price=price,
-                    condition="Не указано",
-                    size=_extract_size(name),
-                    image_url=img_url,
-                    url=item_url,
-                    seller="",
-                    status="В продаже",
-                ))
-
-                if len(results) >= limit:
-                    break
+            for i, d in enumerate(debug_info):
+                logging.info(f"[Rakuma] Card {i}: tag={d['tag']} class={d['class'][:50]} href={d['href'][:80]} alt={d['imgAlt'][:50]}")
 
             await browser.close()
 
