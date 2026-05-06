@@ -96,30 +96,18 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
 
             page = await context.new_page()
             url = f"https://fril.jp/s?query={translated_query}&sort=created_at&order=desc&status=selling"
-            if min_price > 0:
-                url += f"&min_price={min_price}"
-            if max_price < 999999:
-                url += f"&max_price={max_price}"
 
             logging.info(f"[Rakuma] Открываем: {url}")
-            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+            await page.goto(url, timeout=60000, wait_until="networkidle")
+            await asyncio.sleep(3)
 
-            debug_info = await page.evaluate("""
-                () => {
-                    const cards = Array.from(document.querySelectorAll('.items__listItem, [class*="item"], li, article')).slice(0, 3);
-                    return cards.map(card => ({
-                        tag: card.tagName,
-                        class: card.className,
-                        html: card.innerHTML.slice(0, 300),
-                        href: card.querySelector('a') ? card.querySelector('a').href : '',
-                        imgAlt: card.querySelector('img') ? card.querySelector('img').alt : '',
-                    }));
-                }
-            """)
+            title = await page.title()
+            page_url = page.url
+            logging.info(f"[Rakuma] Заголовок: {title}")
+            logging.info(f"[Rakuma] URL после загрузки: {page_url}")
 
-            for i, d in enumerate(debug_info):
-                logging.info(f"[Rakuma] Card {i}: tag={d['tag']} class={d['class'][:50]} href={d['href'][:80]} alt={d['imgAlt'][:50]}")
+            body_text = await page.evaluate("() => document.body.innerText.slice(0, 500)")
+            logging.info(f"[Rakuma] Текст страницы: {body_text}")
 
             await browser.close()
 
