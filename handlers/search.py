@@ -12,6 +12,7 @@ from aiogram.filters import Command
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
+from parsers.rakuma import search_rakuma, RakumaItem
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -25,6 +26,7 @@ PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
     "yahoo": "Yahoo Auctions 🇯🇵",
     "bunjang": "Bunjang 🇰🇷",
+    "rakuma": "Rakuma 🇯🇵",
 }
 
 
@@ -98,6 +100,7 @@ def platform_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Mercari 🇯🇵", callback_data="platform_mercari")],
         [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
+        [InlineKeyboardButton(text="Rakuma 🇯🇵", callback_data="platform_rakuma")],
         [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
     ])
 
@@ -262,7 +265,7 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(SearchForm.choosing_bunjang_category)
-    elif mode == "category" and platform != "bunjang":
+    elif mode == "category" and platform not in ["bunjang"]:
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
             reply_markup=category_group_keyboard(),
@@ -489,6 +492,9 @@ async def _run_search(message: Message, state: FSMContext):
     elif platform == "yahoo":
         tasks.append(search_yahoo(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
         labels.append("yahoo")
+    elif platform == "rakuma":
+        tasks.append(search_rakuma(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
+        labels.append("rakuma")
     elif platform == "bunjang":
         tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
@@ -535,7 +541,7 @@ async def _run_search(message: Message, state: FSMContext):
             currency = "₩" if label == "bunjang" else "¥"
             text = _format_item(item, label, rate, currency)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://bunjang.co.kr")],
+                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://fril.jp")],
             ])
 
             if item.image_url:
@@ -568,7 +574,12 @@ async def _run_search(message: Message, state: FSMContext):
 
 
 def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") -> str:
-    platform_icons = {"mercari": "🇯🇵 Mercari", "yahoo": "🇯🇵 Yahoo", "bunjang": "🇰🇷 Bunjang"}
+    platform_icons = {
+        "mercari": "🇯🇵 Mercari",
+        "yahoo": "🇯🇵 Yahoo",
+        "bunjang": "🇰🇷 Bunjang",
+        "rakuma": "🇯🇵 Rakuma",
+    }
     rub_price = int(item.price * rate)
     lines = [
         f"<b>{platform_icons.get(platform, platform)}</b>",
