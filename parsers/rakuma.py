@@ -5,7 +5,9 @@ import re
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
-from playwright.async_api import async_playwright
+from urllib.parse import urlencode, quote
+import aiohttp
+from aiohttp_socks import ProxyConnector
 from deep_translator import GoogleTranslator
 
 @dataclass
@@ -60,65 +62,90 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
     translated_query = await _translate_to_japanese(query)
 
     proxy_url = proxy or os.environ.get("PROXY_URL")
-    proxy_config = None
-    if proxy_url:
-        match = re.match(r'(https?|socks5)://([^:@]+):([^@]+)@([^:]+):(\d+)', proxy_url)
-        if match:
-            proto, user, password, host, port = match.groups()
-            proxy_config = {
-                "server": f"{proto}://{host}:{port}",
-                "username": user,
-                "password": password,
-            }
-        else:
-            proxy_config = {"server": proxy_url}
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://fril.jp/",
+    }
+
+    # Параметры запроса
+    params = {
+        "keyword": translated_query,
+        "sort": "created_at",
+        "order": "desc",
+        "status": "on_sale",
+        "page": 1,
+        "limit": limit,
+    }
+    if min_price > 0:
+        params["price_min"] = min_price
+    if max_price < 999999:
+        params["price_max"] = max_price
+
+    # Формируем URL с правильным encoding
+    api_url = "https://fril.jp/api/search/items?" + urlencode(params, quote_via=quote)
+    logging.info(f"[Rakuma] API запрос: {api_url}")
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_config,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            )
-            context = await browser.new_context(
-                locale="ja-JP",
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                extra_http_headers={
-                    "Accept-Language": "ja-JP,ja;q=0.9",
-                }
-            )
-            page = await context.new_page()
+        # Настраиваем прокси коннектор
+        if proxy_url and "socks5" in proxy_url:
+            connector = ProxyConnector.from_url(proxy_url)
+        else:
+            connector = aiohttp.TCPConnector()
 
-            url = f"https://fril.jp/s?query={translated_query}&sort=created_at&order=desc&status=selling"
-            logging.info(f"[Rakuma] Открываем: {url}")
+        async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                logging.info(f"[Rakuma] Статус ответа: {resp.status}")
+                logging.info(f"[Rakuma] Content-Type: {resp.content_type}")
 
-            await page.goto(url, timeout=60000, wait_until="commit")
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    logging.info(f"[Rakuma] Ответ API (ключи): {list(data.keys()) if isinstance(data, dict) else type(data)}")
 
-            # Ждём дольше чтобы JS успел отрендерить товары
-            await asyncio.sleep(5)
+                    # Пробуем разные структуры ответа
+                    items_data = []
+                    if isinstance(data, dict):
+                        items_data = data.get("items", data.get("results", data.get("data", [])))
+                    elif isinstance(data, list):
+                        items_data = data
 
-            title = await page.title()
-            logging.info(f"[Rakuma] Заголовок: {title}")
+                    logging.info(f"[Rakuma] Найдено товаров в ответе: {len(items_data)}")
 
-            # Дебаг HTML по частям
-            html1 = await page.evaluate("() => document.body.innerHTML.slice(0, 3000)")
-            logging.info(f"[Rakuma] HTML 1: {html1}")
+                    for item in items_data[:limit]:
+                        try:
+                            item_id = str(item.get("id", ""))
+                            name = item.get("name", item.get("title", ""))
+                            price = int(item.get("price", 0))
+                            image_url = item.get("thumbnails", [{}])[0].get("url", "") if item.get("thumbnails") else item.get("image_url", item.get("thumbnail", ""))
+                            item_url = f"https://fril.jp/item/{item_id}"
+                            seller = item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else ""
+                            condition = item.get("condition", {}).get("name", "") if isinstance(item.get("condition"), dict) else str(item.get("condition", ""))
 
-            html2 = await page.evaluate("() => document.body.innerHTML.slice(3000, 6000)")
-            logging.info(f"[Rakuma] HTML 2: {html2}")
+                            if not name or price == 0:
+                                continue
+                            if price < min_price or price > max_price:
+                                continue
 
-            html3 = await page.evaluate("() => document.body.innerHTML.slice(6000, 9000)")
-            logging.info(f"[Rakuma] HTML 3: {html3}")
-
-            html4 = await page.evaluate("() => document.body.innerHTML.slice(9000, 12000)")
-            logging.info(f"[Rakuma] HTML 4: {html4}")
-
-            # Пробуем разные селекторы
-            for selector in ["li.item", "li[class*='item']", "[class*='item-box']", "[class*='product']", "article", "[class*='card']", "[class*='goods']"]:
-                items = await page.query_selector_all(selector)
-                logging.info(f"[Rakuma] Селектор '{selector}': {len(items)} элементов")
-
-            await browser.close()
+                            results.append(RakumaItem(
+                                id=item_id,
+                                name=name,
+                                price=price,
+                                condition=condition,
+                                size=_extract_size(name),
+                                image_url=image_url,
+                                url=item_url,
+                                seller=seller,
+                                status="on_sale",
+                            ))
+                        except Exception as e:
+                            logging.warning(f"[Rakuma] Ошибка парсинга элемента: {e}")
+                            continue
+                else:
+                    text = await resp.text()
+                    logging.error(f"[Rakuma] Ошибка {resp.status}: {text[:500]}")
 
     except Exception as e:
         logging.error(f"[Rakuma] Ошибка: {e}")
