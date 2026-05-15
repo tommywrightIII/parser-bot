@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import json
+import base64
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -74,7 +75,6 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
         else:
             proxy_config = {"server": proxy_url}
 
-    # URL с правильным encoding японского текста
     params = {
         "query": translated_query,
         "sort": "created_at",
@@ -98,128 +98,43 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
             )
             context = await browser.new_context(
                 locale="ja-JP",
+                viewport={"width": 1280, "height": 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
             )
             page = await context.new_page()
 
-            # Перехватываем XHR/fetch запросы чтобы найти API
-            api_response_data = []
-
-            async def handle_response(response):
-                if "fril.jp" in response.url and response.status == 200:
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct:
-                        try:
-                            data = await response.json()
-                            logging.info(f"[Rakuma] XHR JSON: {response.url} → ключи: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-                            api_response_data.append((response.url, data))
-                        except Exception:
-                            pass
-
-            page.on("response", handle_response)
-
             await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(5)
 
-            # Ждём появления товаров — пробуем разные селекторы
-            selectors_to_try = [
-                "[class*='item']",
-                "[class*='product']",
-                "[class*='card']",
-                "li a[href*='/item/']",
-                "a[href*='/item/']",
-            ]
-
-            found_selector = None
-            for selector in selectors_to_try:
-                try:
-                    await page.wait_for_selector(selector, timeout=8000)
-                    count = len(await page.query_selector_all(selector))
-                    logging.info(f"[Rakuma] Селектор '{selector}': {count} элементов")
-                    if count > 3:
-                        found_selector = selector
-                        break
-                except Exception:
-                    logging.info(f"[Rakuma] Селектор '{selector}': не найден")
-
-            await asyncio.sleep(3)
-
-            # Логируем заголовок страницы
+            # Логируем реальный URL после редиректов
+            current_url = page.url
             title = await page.title()
+            logging.info(f"[Rakuma] Реальный URL: {current_url}")
             logging.info(f"[Rakuma] Заголовок: {title}")
 
-            # Если нашли XHR данные — используем их
-            if api_response_data:
-                logging.info(f"[Rakuma] Найдено XHR ответов: {len(api_response_data)}")
-                for url_found, data in api_response_data:
-                    logging.info(f"[Rakuma] XHR URL: {url_found}")
+            # Скриншот для отладки — сохраняем в base64 в лог
+            screenshot = await page.screenshot(full_page=False)
+            screenshot_b64 = base64.b64encode(screenshot).decode()
+            logging.info(f"[Rakuma] SCREENSHOT_BASE64:{screenshot_b64[:100]}...")
 
-            # Пробуем найти товары через ссылки на /item/
-            item_links = await page.query_selector_all("a[href*='/item/']")
-            logging.info(f"[Rakuma] Ссылок на товары: {len(item_links)}")
+            # Сохраняем скриншот на диск
+            with open("/tmp/rakuma_debug.png", "wb") as f:
+                f.write(screenshot)
+            logging.info(f"[Rakuma] Скриншот сохранён в /tmp/rakuma_debug.png")
 
-            seen_ids = set()
-            for link in item_links[:limit * 2]:
-                try:
-                    href = await link.get_attribute("href")
-                    if not href:
-                        continue
-                    if not href.startswith("http"):
-                        href = "https://fril.jp" + href
+            # Логируем весь текст страницы
+            body_text = await page.evaluate("() => document.body.innerText.slice(0, 1000)")
+            logging.info(f"[Rakuma] Текст страницы: {body_text}")
 
-                    # Извлекаем ID из URL
-                    id_match = re.search(r'/item/([a-zA-Z0-9]+)', href)
-                    if not id_match:
-                        continue
-                    item_id = id_match.group(1)
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-
-                    # Ищем картинку внутри ссылки
-                    img = await link.query_selector("img")
-                    image_url = await img.get_attribute("src") if img else ""
-                    name = await img.get_attribute("alt") if img else ""
-
-                    # Ищем цену рядом
-                    parent = await link.evaluate_handle("el => el.closest('li') || el.parentElement")
-                    price_el = await parent.query_selector("[class*='price'], [class*='Price']")
-                    price_text = await price_el.inner_text() if price_el else "0"
-                    price = int(re.sub(r"[^\d]", "", price_text) or 0)
-
-                    if not name and not image_url:
-                        continue
-                    if price == 0:
-                        continue
-                    if price < min_price or price > max_price:
-                        continue
-
-                    results.append(RakumaItem(
-                        id=item_id,
-                        name=name or item_id,
-                        price=price,
-                        condition="",
-                        size=_extract_size(name or ""),
-                        image_url=image_url,
-                        url=href,
-                        seller="",
-                        status="on_sale",
-                    ))
-
-                    if len(results) >= limit:
-                        break
-
-                except Exception as e:
-                    logging.warning(f"[Rakuma] Ошибка парсинга ссылки: {e}")
-                    continue
-
-            # Если всё ещё ничего — логируем HTML для отладки
-            if not results:
-                html = await page.content()
-                logging.info(f"[Rakuma] HTML длина: {len(html)}")
-                # Ищем ссылки на item в HTML
-                item_hrefs = re.findall(r'href="(/item/[^"]+)"', html)
-                logging.info(f"[Rakuma] href /item/ в HTML: {len(item_hrefs)} → {item_hrefs[:5]}")
+            # Все ссылки на странице
+            all_links = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => a.href)
+                    .filter(h => h.includes('fril.jp'))
+                    .slice(0, 30)
+            }""")
+            logging.info(f"[Rakuma] Все ссылки fril.jp: {all_links}")
 
             await browser.close()
 
