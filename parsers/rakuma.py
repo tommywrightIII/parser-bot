@@ -2,13 +2,12 @@ import asyncio
 import logging
 import os
 import re
-import json
-import base64
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from urllib.parse import urlencode, quote
-from playwright.async_api import async_playwright
+import aiohttp
+from aiohttp_socks import ProxyConnector
 from deep_translator import GoogleTranslator
 
 @dataclass
@@ -63,80 +62,141 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
     translated_query = await _translate_to_japanese(query)
 
     proxy_url = proxy or os.environ.get("PROXY_URL")
-    proxy_config = None
-    if proxy_url:
-        match = re.match(r'(socks5|https?)://(?:([^:@]+):([^@]+)@)?([^:]+):(\d+)', proxy_url)
-        if match:
-            proto, user, password, host, port = match.groups()
-            proxy_config = {"server": f"{proto}://{host}:{port}"}
-            if user and password:
-                proxy_config["username"] = user
-                proxy_config["password"] = password
-        else:
-            proxy_config = {"server": proxy_url}
 
-    params = {
-        "query": translated_query,
-        "sort": "created_at",
-        "order": "desc",
-        "status": "on_sale",
-    }
-    if min_price > 0:
-        params["price_min"] = min_price
-    if max_price < 999999:
-        params["price_max"] = max_price
-
-    search_url = "https://fril.jp/s?" + urlencode(params, quote_via=quote)
-    logging.info(f"[Rakuma] URL: {search_url}")
+    # Мобильный API Rakuma
+    endpoints = [
+        {
+            "url": "https://api.fril.jp/v1/items/search",
+            "headers": {
+                "User-Agent": "Rakuma/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+                "Accept": "application/json",
+                "Accept-Language": "ja-JP",
+                "X-Api-Version": "5",
+            },
+            "params": {
+                "keyword": translated_query,
+                "sort": "created_at",
+                "order": "desc",
+                "status": "on_sale",
+                "page": 1,
+                "per_page": limit,
+            }
+        },
+        {
+            "url": "https://api.fril.jp/v2/items/search",
+            "headers": {
+                "User-Agent": "Rakuma/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+                "Accept": "application/json",
+                "Accept-Language": "ja-JP",
+            },
+            "params": {
+                "keyword": translated_query,
+                "sort": "created_at",
+                "order": "desc",
+                "status": "on_sale",
+                "page": 1,
+                "per_page": limit,
+            }
+        },
+        {
+            "url": "https://api.fril.jp/v1/search",
+            "headers": {
+                "User-Agent": "Rakuma/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+                "Accept": "application/json",
+                "Accept-Language": "ja-JP",
+            },
+            "params": {
+                "q": translated_query,
+                "sort": "created_at",
+                "order": "desc",
+                "page": 1,
+            }
+        },
+        {
+            "url": "https://rakuma.rakuten.co.jp/api/v1/items/search",
+            "headers": {
+                "User-Agent": "Rakuma/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+                "Accept": "application/json",
+                "Accept-Language": "ja-JP",
+            },
+            "params": {
+                "keyword": translated_query,
+                "sort": "created_at",
+                "order": "desc",
+                "status": "on_sale",
+                "page": 1,
+                "per_page": limit,
+            }
+        },
+    ]
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_config,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            )
-            context = await browser.new_context(
-                locale="ja-JP",
-                viewport={"width": 1280, "height": 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
-            )
-            page = await context.new_page()
+        if proxy_url and "socks5" in proxy_url:
+            connector = ProxyConnector.from_url(proxy_url)
+        else:
+            connector = aiohttp.TCPConnector()
 
-            await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(5)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            for ep in endpoints:
+                url = ep["url"] + "?" + urlencode(ep["params"], quote_via=quote)
+                logging.info(f"[Rakuma] Пробуем: {url[:80]}")
+                try:
+                    async with session.get(url, headers=ep["headers"], timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        logging.info(f"[Rakuma] Статус: {resp.status}, CT: {resp.content_type}")
+                        text = await resp.text()
+                        logging.info(f"[Rakuma] Ответ: {text[:300]}")
 
-            # Логируем реальный URL после редиректов
-            current_url = page.url
-            title = await page.title()
-            logging.info(f"[Rakuma] Реальный URL: {current_url}")
-            logging.info(f"[Rakuma] Заголовок: {title}")
+                        if resp.status == 200 and "json" in resp.content_type:
+                            import json
+                            data = json.loads(text)
+                            logging.info(f"[Rakuma] JSON ключи: {list(data.keys()) if isinstance(data, dict) else type(data)}")
 
-            # Скриншот для отладки — сохраняем в base64 в лог
-            screenshot = await page.screenshot(full_page=False)
-            screenshot_b64 = base64.b64encode(screenshot).decode()
-            logging.info(f"[Rakuma] SCREENSHOT_BASE64:{screenshot_b64[:100]}...")
+                            items_data = []
+                            if isinstance(data, dict):
+                                items_data = data.get("items", data.get("results", data.get("data", [])))
+                            elif isinstance(data, list):
+                                items_data = data
 
-            # Сохраняем скриншот на диск
-            with open("/tmp/rakuma_debug.png", "wb") as f:
-                f.write(screenshot)
-            logging.info(f"[Rakuma] Скриншот сохранён в /tmp/rakuma_debug.png")
+                            for item in items_data[:limit]:
+                                try:
+                                    item_id = str(item.get("id", ""))
+                                    name = item.get("name", item.get("title", ""))
+                                    price = int(item.get("price", 0))
+                                    image_url = ""
+                                    if item.get("thumbnails"):
+                                        image_url = item["thumbnails"][0].get("url", "")
+                                    else:
+                                        image_url = item.get("image_url", item.get("thumbnail", ""))
+                                    item_url = f"https://fril.jp/item/{item_id}"
+                                    seller = item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else ""
+                                    cond = item.get("condition", {}).get("name", "") if isinstance(item.get("condition"), dict) else str(item.get("condition", ""))
 
-            # Логируем весь текст страницы
-            body_text = await page.evaluate("() => document.body.innerText.slice(0, 1000)")
-            logging.info(f"[Rakuma] Текст страницы: {body_text}")
+                                    if not name or price == 0:
+                                        continue
+                                    if price < min_price or price > max_price:
+                                        continue
 
-            # Все ссылки на странице
-            all_links = await page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('a[href]'))
-                    .map(a => a.href)
-                    .filter(h => h.includes('fril.jp'))
-                    .slice(0, 30)
-            }""")
-            logging.info(f"[Rakuma] Все ссылки fril.jp: {all_links}")
+                                    results.append(RakumaItem(
+                                        id=item_id,
+                                        name=name,
+                                        price=price,
+                                        condition=cond,
+                                        size=_extract_size(name),
+                                        image_url=image_url,
+                                        url=item_url,
+                                        seller=seller,
+                                        status="on_sale",
+                                    ))
+                                except Exception as e:
+                                    logging.warning(f"[Rakuma] Ошибка элемента: {e}")
 
-            await browser.close()
+                            if results:
+                                logging.info(f"[Rakuma] Успех через {ep['url']}")
+                                break
+
+                except Exception as e:
+                    logging.warning(f"[Rakuma] Ошибка {ep['url']}: {e}")
+                    continue
 
     except Exception as e:
         logging.error(f"[Rakuma] Ошибка: {e}")
