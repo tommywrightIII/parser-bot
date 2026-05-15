@@ -11,16 +11,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
 from parsers.mercari import search_mercari
-from parsers.rakuma import search_rakuma
 from parsers.app95 import search_95app
 from config import TRACK_INTERVAL, PROXY_URL
 
 router = Router()
 
-# Простое хранилище треков (в продакшне замени на Redis или SQLite)
 TRACKS_FILE = "tracks.json"
-_tracks: dict = {}  # user_id -> list of track configs
-_seen_ids: dict = {}  # track_key -> set of seen item ids
+_tracks: dict = {}
+_seen_ids: dict = {}
 
 
 def load_tracks():
@@ -57,7 +55,7 @@ async def cmd_track(message: Message, state: FSMContext):
                 f"   Размер: {t.get('size', 'любой')}\n"
                 f"   Цена: {t.get('min_price', 0)}–{t.get('max_price', '∞')}\n\n"
             )
-        
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить трекинг", callback_data="track_add")],
             [InlineKeyboardButton(text="🗑 Удалить все", callback_data="track_clear")],
@@ -100,7 +98,7 @@ async def process_track_query(message: Message, state: FSMContext):
         "<code>mercari 27cm 5000:20000 like_new</code>\n"
         "<code>all 42</code>\n"
         "<code>95app US9 new</code>\n\n"
-        "Платформы: mercari, rakuma, 95app, all\n"
+        "Платформы: mercari, 95app, all\n"
         "Состояния: new, like_new, good, fair, poor",
         parse_mode="HTML"
     )
@@ -111,8 +109,7 @@ async def process_track_query(message: Message, state: FSMContext):
 async def process_track_params(message: Message, state: FSMContext):
     data = await state.get_data()
     query = data.get("query", "")
-    
-    # Парсим параметры
+
     platform = "all"
     size = None
     min_price = 0
@@ -122,7 +119,7 @@ async def process_track_params(message: Message, state: FSMContext):
     if message.text and message.text.strip() != "/skip":
         parts = message.text.strip().split()
         for part in parts:
-            if part in ("mercari", "rakuma", "95app", "all"):
+            if part in ("mercari", "95app", "all"):
                 platform = part
             elif part in ("new", "like_new", "good", "fair", "poor"):
                 condition = part
@@ -134,7 +131,6 @@ async def process_track_params(message: Message, state: FSMContext):
                 except:
                     pass
             else:
-                # Возможно размер
                 size = part
 
     user_id = str(message.from_user.id)
@@ -149,10 +145,10 @@ async def process_track_params(message: Message, state: FSMContext):
         "min_price": min_price,
         "max_price": max_price,
     }
-    
+
     _tracks[user_id].append(track)
     save_tracks()
-    
+
     await state.clear()
     await message.answer(
         f"✅ <b>Трекинг добавлен!</b>\n\n"
@@ -166,20 +162,17 @@ async def process_track_params(message: Message, state: FSMContext):
     )
 
 
-# Удаление трека по кнопке из результатов поиска
 @router.callback_query(F.data.startswith("track_"))
 async def quick_track(callback: CallbackQuery):
-    """Быстрый трекинг конкретного товара из результатов поиска"""
     parts = callback.data.split("_", 2)
     if len(parts) < 3:
         await callback.answer("Ошибка")
         return
-    
+
     platform = parts[1]
     item_id = parts[2]
     user_id = str(callback.from_user.id)
 
-    # Сохраняем ID как уже виденный, чтобы трекинг искал НОВЫЕ
     track_key = f"{user_id}_{platform}_{item_id}"
     if track_key not in _seen_ids:
         _seen_ids[track_key] = set()
@@ -188,13 +181,10 @@ async def quick_track(callback: CallbackQuery):
     await callback.answer("📌 Добавлено в отслеживание!", show_alert=True)
 
 
-# ——— Фоновый трекинг ———
-
 async def tracking_loop(bot: Bot):
-    """Фоновый цикл проверки трекингов"""
     while True:
         await asyncio.sleep(TRACK_INTERVAL)
-        
+
         for user_id, tracks in list(_tracks.items()):
             for track in tracks:
                 try:
@@ -204,7 +194,6 @@ async def tracking_loop(bot: Bot):
 
 
 async def check_track(bot: Bot, user_id: str, track: dict):
-    """Проверить один трек и отправить уведомления о новых товарах"""
     query = track["query"]
     platform = track.get("platform", "all")
     size = track.get("size")
@@ -213,15 +202,13 @@ async def check_track(bot: Bot, user_id: str, track: dict):
     max_price = track.get("max_price", 999999)
 
     track_key = f"{user_id}_{platform}_{query}"
-    
+
     if track_key not in _seen_ids:
         _seen_ids[track_key] = set()
 
     parsers = []
     if platform in ("mercari", "all"):
         parsers.append(("mercari", search_mercari(query, min_price, max_price, condition, size, 20, PROXY_URL)))
-    if platform in ("rakuma", "all"):
-        parsers.append(("rakuma", search_rakuma(query, min_price, max_price, condition, size, 20, PROXY_URL)))
     if platform in ("95app", "all"):
         parsers.append(("95app", search_95app(query, min_price, max_price, condition, size, 20, PROXY_URL)))
 
@@ -230,18 +217,16 @@ async def check_track(bot: Bot, user_id: str, track: dict):
     for (plat, _), items in zip(parsers, results):
         if isinstance(items, Exception) or not items:
             continue
-        
+
         for item in items:
             item_uid = f"{plat}_{item.id}"
             if item_uid not in _seen_ids[track_key]:
                 _seen_ids[track_key].add(item_uid)
-                
-                # Первый запуск — просто сохраняем IDs, не уведомляем
+
                 if len(_seen_ids[track_key]) <= len(items):
                     continue
 
-                # Отправляем уведомление о новом товаре
-                currency = "¥" if plat in ("mercari", "rakuma") else "¥CNY"
+                currency = "¥"
                 text = (
                     f"🔔 <b>Новый товар!</b>\n\n"
                     f"🔍 Трек: <b>{query}</b>\n"
@@ -255,7 +240,7 @@ async def check_track(bot: Bot, user_id: str, track: dict):
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔗 Открыть", url=item.url)]
                 ])
-                
+
                 try:
                     await bot.send_message(
                         int(user_id),
