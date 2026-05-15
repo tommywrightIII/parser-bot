@@ -12,7 +12,6 @@ from aiogram.filters import Command
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
-from parsers.rakuma import search_rakuma, RakumaItem
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -26,7 +25,6 @@ PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
     "yahoo": "Yahoo Auctions 🇯🇵",
     "bunjang": "Bunjang 🇰🇷",
-    "rakuma": "Rakuma 🇯🇵",
 }
 
 
@@ -100,7 +98,6 @@ def platform_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Mercari 🇯🇵", callback_data="platform_mercari")],
         [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
-        [InlineKeyboardButton(text="Rakuma 🇯🇵", callback_data="platform_rakuma")],
         [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
     ])
 
@@ -492,9 +489,6 @@ async def _run_search(message: Message, state: FSMContext):
     elif platform == "yahoo":
         tasks.append(search_yahoo(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
         labels.append("yahoo")
-    elif platform == "rakuma":
-        tasks.append(search_rakuma(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
-        labels.append("rakuma")
     elif platform == "bunjang":
         tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
@@ -578,7 +572,6 @@ def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") 
         "mercari": "🇯🇵 Mercari",
         "yahoo": "🇯🇵 Yahoo",
         "bunjang": "🇰🇷 Bunjang",
-        "rakuma": "🇯🇵 Rakuma",
     }
     rub_price = int(item.price * rate)
     lines = [
