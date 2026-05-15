@@ -71,81 +71,100 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
         "Referer": "https://fril.jp/",
     }
 
-    # Параметры запроса
+    # Настраиваем прокси коннектор
+    if proxy_url and "socks5" in proxy_url:
+        connector = ProxyConnector.from_url(proxy_url)
+    else:
+        connector = aiohttp.TCPConnector()
+
+    # Список возможных API endpoints для перебора
+    endpoints = [
+        "https://fril.jp/api/items/search",
+        "https://fril.jp/api/v1/items/search",
+        "https://fril.jp/api/v2/items/search",
+        "https://fril.jp/api/search",
+        "https://fril.jp/api/v1/search",
+        "https://fril.jp/api/items",
+    ]
+
     params = {
         "keyword": translated_query,
         "sort": "created_at",
         "order": "desc",
         "status": "on_sale",
         "page": 1,
-        "limit": limit,
+        "per_page": limit,
     }
     if min_price > 0:
         params["price_min"] = min_price
     if max_price < 999999:
         params["price_max"] = max_price
 
-    # Формируем URL с правильным encoding
-    api_url = "https://fril.jp/api/search/items?" + urlencode(params, quote_via=quote)
-    logging.info(f"[Rakuma] API запрос: {api_url}")
-
     try:
-        # Настраиваем прокси коннектор
-        if proxy_url and "socks5" in proxy_url:
-            connector = ProxyConnector.from_url(proxy_url)
-        else:
-            connector = aiohttp.TCPConnector()
-
         async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                logging.info(f"[Rakuma] Статус ответа: {resp.status}")
-                logging.info(f"[Rakuma] Content-Type: {resp.content_type}")
 
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    logging.info(f"[Rakuma] Ответ API (ключи): {list(data.keys()) if isinstance(data, dict) else type(data)}")
+            # Сначала пробуем найти правильный endpoint через XHR перехват
+            # Пробуем каждый endpoint
+            for endpoint in endpoints:
+                url = endpoint + "?" + urlencode(params, quote_via=quote)
+                logging.info(f"[Rakuma] Пробуем: {url}")
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        logging.info(f"[Rakuma] {endpoint} → статус: {resp.status}, content-type: {resp.content_type}")
+                        if resp.status == 200 and "json" in resp.content_type:
+                            data = await resp.json(content_type=None)
+                            logging.info(f"[Rakuma] Успех! Ключи ответа: {list(data.keys()) if isinstance(data, dict) else type(data)}")
 
-                    # Пробуем разные структуры ответа
-                    items_data = []
-                    if isinstance(data, dict):
-                        items_data = data.get("items", data.get("results", data.get("data", [])))
-                    elif isinstance(data, list):
-                        items_data = data
+                            items_data = []
+                            if isinstance(data, dict):
+                                items_data = data.get("items", data.get("results", data.get("data", [])))
+                            elif isinstance(data, list):
+                                items_data = data
 
-                    logging.info(f"[Rakuma] Найдено товаров в ответе: {len(items_data)}")
+                            logging.info(f"[Rakuma] Товаров в ответе: {len(items_data)}")
 
-                    for item in items_data[:limit]:
-                        try:
-                            item_id = str(item.get("id", ""))
-                            name = item.get("name", item.get("title", ""))
-                            price = int(item.get("price", 0))
-                            image_url = item.get("thumbnails", [{}])[0].get("url", "") if item.get("thumbnails") else item.get("image_url", item.get("thumbnail", ""))
-                            item_url = f"https://fril.jp/item/{item_id}"
-                            seller = item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else ""
-                            condition = item.get("condition", {}).get("name", "") if isinstance(item.get("condition"), dict) else str(item.get("condition", ""))
+                            for item in items_data[:limit]:
+                                try:
+                                    item_id = str(item.get("id", ""))
+                                    name = item.get("name", item.get("title", ""))
+                                    price = int(item.get("price", 0))
+                                    image_url = ""
+                                    if item.get("thumbnails"):
+                                        image_url = item["thumbnails"][0].get("url", "")
+                                    else:
+                                        image_url = item.get("image_url", item.get("thumbnail", ""))
+                                    item_url = f"https://fril.jp/item/{item_id}"
+                                    seller = item.get("seller", {}).get("name", "") if isinstance(item.get("seller"), dict) else ""
+                                    condition = item.get("condition", {}).get("name", "") if isinstance(item.get("condition"), dict) else str(item.get("condition", ""))
 
-                            if not name or price == 0:
-                                continue
-                            if price < min_price or price > max_price:
-                                continue
+                                    if not name or price == 0:
+                                        continue
+                                    if price < min_price or price > max_price:
+                                        continue
 
-                            results.append(RakumaItem(
-                                id=item_id,
-                                name=name,
-                                price=price,
-                                condition=condition,
-                                size=_extract_size(name),
-                                image_url=image_url,
-                                url=item_url,
-                                seller=seller,
-                                status="on_sale",
-                            ))
-                        except Exception as e:
-                            logging.warning(f"[Rakuma] Ошибка парсинга элемента: {e}")
-                            continue
-                else:
-                    text = await resp.text()
-                    logging.error(f"[Rakuma] Ошибка {resp.status}: {text[:500]}")
+                                    results.append(RakumaItem(
+                                        id=item_id,
+                                        name=name,
+                                        price=price,
+                                        condition=condition,
+                                        size=_extract_size(name),
+                                        image_url=image_url,
+                                        url=item_url,
+                                        seller=seller,
+                                        status="on_sale",
+                                    ))
+                                except Exception as e:
+                                    logging.warning(f"[Rakuma] Ошибка парсинга элемента: {e}")
+                                    continue
+
+                            if results:
+                                break
+                        else:
+                            text = await resp.text()
+                            logging.info(f"[Rakuma] {endpoint} → не подходит: {text[:100]}")
+                except Exception as e:
+                    logging.warning(f"[Rakuma] {endpoint} → ошибка: {e}")
+                    continue
 
     except Exception as e:
         logging.error(f"[Rakuma] Ошибка: {e}")
