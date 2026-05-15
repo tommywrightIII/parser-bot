@@ -7,8 +7,7 @@ from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 from urllib.parse import urlencode, quote
-import aiohttp
-from aiohttp_socks import ProxyConnector
+from playwright.async_api import async_playwright
 from deep_translator import GoogleTranslator
 
 @dataclass
@@ -58,34 +57,24 @@ async def _translate_to_japanese(query: str) -> str:
         logging.warning(f"[Rakuma] Ошибка перевода: {e}")
         return query
 
-def _find_items_in_data(data, depth=0):
-    """Рекурсивно ищем массив с товарами в JSON"""
-    if depth > 10:
-        return None
-    if isinstance(data, list) and len(data) > 0:
-        first = data[0]
-        if isinstance(first, dict) and any(k in first for k in ["id", "price", "name", "title"]):
-            return data
-    if isinstance(data, dict):
-        for key, value in data.items():
-            result = _find_items_in_data(value, depth + 1)
-            if result:
-                return result
-    return None
-
 async def search_rakuma(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
     results = []
     translated_query = await _translate_to_japanese(query)
 
     proxy_url = proxy or os.environ.get("PROXY_URL")
+    proxy_config = None
+    if proxy_url:
+        match = re.match(r'(socks5|https?)://(?:([^:@]+):([^@]+)@)?([^:]+):(\d+)', proxy_url)
+        if match:
+            proto, user, password, host, port = match.groups()
+            proxy_config = {"server": f"{proto}://{host}:{port}"}
+            if user and password:
+                proxy_config["username"] = user
+                proxy_config["password"] = password
+        else:
+            proxy_config = {"server": proxy_url}
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ja-JP,ja;q=0.9",
-        "Referer": "https://fril.jp/",
-    }
-
+    # URL с правильным encoding японского текста
     params = {
         "query": translated_query,
         "sort": "created_at",
@@ -97,57 +86,142 @@ async def search_rakuma(query, min_price=0, max_price=999999, condition=None, si
     if max_price < 999999:
         params["price_max"] = max_price
 
-    url = "https://fril.jp/s?" + urlencode(params, quote_via=quote)
-    logging.info(f"[Rakuma] Запрос: {url}")
+    search_url = "https://fril.jp/s?" + urlencode(params, quote_via=quote)
+    logging.info(f"[Rakuma] URL: {search_url}")
 
     try:
-        if proxy_url and "socks5" in proxy_url:
-            connector = ProxyConnector.from_url(proxy_url)
-        else:
-            connector = aiohttp.TCPConnector()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy_config,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
+            context = await browser.new_context(
+                locale="ja-JP",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
+            )
+            page = await context.new_page()
 
-        async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                logging.info(f"[Rakuma] Статус: {resp.status}")
-                html = await resp.text()
+            # Перехватываем XHR/fetch запросы чтобы найти API
+            api_response_data = []
+
+            async def handle_response(response):
+                if "fril.jp" in response.url and response.status == 200:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        try:
+                            data = await response.json()
+                            logging.info(f"[Rakuma] XHR JSON: {response.url} → ключи: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                            api_response_data.append((response.url, data))
+                        except Exception:
+                            pass
+
+            page.on("response", handle_response)
+
+            await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
+
+            # Ждём появления товаров — пробуем разные селекторы
+            selectors_to_try = [
+                "[class*='item']",
+                "[class*='product']",
+                "[class*='card']",
+                "li a[href*='/item/']",
+                "a[href*='/item/']",
+            ]
+
+            found_selector = None
+            for selector in selectors_to_try:
+                try:
+                    await page.wait_for_selector(selector, timeout=8000)
+                    count = len(await page.query_selector_all(selector))
+                    logging.info(f"[Rakuma] Селектор '{selector}': {count} элементов")
+                    if count > 3:
+                        found_selector = selector
+                        break
+                except Exception:
+                    logging.info(f"[Rakuma] Селектор '{selector}': не найден")
+
+            await asyncio.sleep(3)
+
+            # Логируем заголовок страницы
+            title = await page.title()
+            logging.info(f"[Rakuma] Заголовок: {title}")
+
+            # Если нашли XHR данные — используем их
+            if api_response_data:
+                logging.info(f"[Rakuma] Найдено XHR ответов: {len(api_response_data)}")
+                for url_found, data in api_response_data:
+                    logging.info(f"[Rakuma] XHR URL: {url_found}")
+
+            # Пробуем найти товары через ссылки на /item/
+            item_links = await page.query_selector_all("a[href*='/item/']")
+            logging.info(f"[Rakuma] Ссылок на товары: {len(item_links)}")
+
+            seen_ids = set()
+            for link in item_links[:limit * 2]:
+                try:
+                    href = await link.get_attribute("href")
+                    if not href:
+                        continue
+                    if not href.startswith("http"):
+                        href = "https://fril.jp" + href
+
+                    # Извлекаем ID из URL
+                    id_match = re.search(r'/item/([a-zA-Z0-9]+)', href)
+                    if not id_match:
+                        continue
+                    item_id = id_match.group(1)
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+
+                    # Ищем картинку внутри ссылки
+                    img = await link.query_selector("img")
+                    image_url = await img.get_attribute("src") if img else ""
+                    name = await img.get_attribute("alt") if img else ""
+
+                    # Ищем цену рядом
+                    parent = await link.evaluate_handle("el => el.closest('li') || el.parentElement")
+                    price_el = await parent.query_selector("[class*='price'], [class*='Price']")
+                    price_text = await price_el.inner_text() if price_el else "0"
+                    price = int(re.sub(r"[^\d]", "", price_text) or 0)
+
+                    if not name and not image_url:
+                        continue
+                    if price == 0:
+                        continue
+                    if price < min_price or price > max_price:
+                        continue
+
+                    results.append(RakumaItem(
+                        id=item_id,
+                        name=name or item_id,
+                        price=price,
+                        condition="",
+                        size=_extract_size(name or ""),
+                        image_url=image_url,
+                        url=href,
+                        seller="",
+                        status="on_sale",
+                    ))
+
+                    if len(results) >= limit:
+                        break
+
+                except Exception as e:
+                    logging.warning(f"[Rakuma] Ошибка парсинга ссылки: {e}")
+                    continue
+
+            # Если всё ещё ничего — логируем HTML для отладки
+            if not results:
+                html = await page.content()
                 logging.info(f"[Rakuma] HTML длина: {len(html)}")
+                # Ищем ссылки на item в HTML
+                item_hrefs = re.findall(r'href="(/item/[^"]+)"', html)
+                logging.info(f"[Rakuma] href /item/ в HTML: {len(item_hrefs)} → {item_hrefs[:5]}")
 
-                # Ищем __NEXT_DATA__ — Next.js вставляет все данные страницы сюда
-                match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
-                if match:
-                    logging.info(f"[Rakuma] __NEXT_DATA__ найден!")
-                    next_data = json.loads(match.group(1))
-
-                    # Логируем структуру для отладки
-                    def log_keys(d, prefix="", depth=0):
-                        if depth > 4:
-                            return
-                        if isinstance(d, dict):
-                            for k, v in d.items():
-                                logging.info(f"[Rakuma] {prefix}{k}: {type(v).__name__}")
-                                log_keys(v, prefix + "  ", depth + 1)
-                    log_keys(next_data)
-
-                    # Ищем товары рекурсивно
-                    items_data = _find_items_in_data(next_data)
-                    if items_data:
-                        logging.info(f"[Rakuma] Найдено товаров: {len(items_data)}")
-                        logging.info(f"[Rakuma] Пример товара: {json.dumps(items_data[0], ensure_ascii=False)[:500]}")
-                    else:
-                        logging.warning("[Rakuma] Товары в __NEXT_DATA__ не найдены")
-                        # Логируем первые 2000 символов __NEXT_DATA__ для отладки
-                        logging.info(f"[Rakuma] __NEXT_DATA__ начало: {match.group(1)[:2000]}")
-                else:
-                    logging.warning("[Rakuma] __NEXT_DATA__ не найден в HTML")
-                    # Ищем другие JSON блоки
-                    json_blocks = re.findall(r'<script[^>]*>(window\.__.*?)</script>', html, re.DOTALL)
-                    for block in json_blocks[:3]:
-                        logging.info(f"[Rakuma] JS блок: {block[:200]}")
-
-                    # Логируем часть HTML где могут быть товары
-                    idx = html.find("item")
-                    if idx > 0:
-                        logging.info(f"[Rakuma] HTML вокруг 'item': {html[max(0,idx-100):idx+500]}")
+            await browser.close()
 
     except Exception as e:
         logging.error(f"[Rakuma] Ошибка: {e}")
