@@ -628,7 +628,8 @@ def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") 
     if item.seller:
         lines.append(f"👤 Продавец: {item.seller}")
     if hasattr(item, "created_at") and item.created_at:
-        lines.append(f"🕐 {format_date(item.created_at)}")
+        dt = item.created_at.replace(tzinfo=None) if item.created_at.tzinfo else item.created_at
+        lines.append(f"🕐 {format_date(dt)}")
     lines.append(f"📊 {item.status}")
     return "\n".join(lines)
 
