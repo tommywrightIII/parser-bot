@@ -1,3 +1,14 @@
+GRAILED_CATEGORIES = {
+    "sneakers": {"name": "👟 Кроссовки", "query": "sneakers", "category": "sneakers"},
+    "footwear": {"name": "👞 Обувь", "query": "footwear", "category": "footwear"},
+    "tops": {"name": "👕 Верх", "query": "tops t-shirts", "category": "tops"},
+    "outerwear": {"name": "🧥 Верхняя одежда", "query": "outerwear jackets", "category": "outerwear"},
+    "bottoms": {"name": "👖 Низ", "query": "pants shorts", "category": "bottoms"},
+    "accessories": {"name": "🎒 Аксессуары", "query": "accessories bags hats", "category": "accessories"},
+    "streetwear": {"name": "🛹 Стритвир", "query": "supreme off-white bape", "category": None},
+    "luxury": {"name": "💎 Люкс", "query": "gucci prada louis vuitton", "category": None},
+}
+
 import asyncio
 import logging
 import re
