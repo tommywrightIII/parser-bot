@@ -86,7 +86,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     algolia_url = "https://mnrwefss2q-dsn.algolia.net/1/indexes/*/queries"
     algolia_params = {
         "x-algolia-agent": "Algolia for JavaScript (4.14.2); Browser (lite)",
-        "x-algolia-api-key": "c89dbaddf15fe70e1941a109bf7c2a3d",
+        "x-algolia-api-key": "OTA4YWRiM2RiZTBkNjgzMmMwMTg2NDcyNWEzOTViMDg5NDQxZTc0NDQ0NzQ4MWI5ODAwNDAzODAwYjE3ZTQwNnZhbGlkVW50aWw9MTc3OTUyNjYwNiZ1c2VyVG9rZW49MTg3OTkwNzI=",
         "x-algolia-application-id": "MNRWEFSS2Q",
     }
 
@@ -113,7 +113,6 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "hitsPerPage": min(limit, 40),
         "page": 0,
         "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
-        "ranking": "desc(created_at)",
     }
     if numeric_filters:
         params_dict["numericFilters"] = ",".join(numeric_filters)
@@ -125,7 +124,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     payload = {
         "requests": [
             {
-                "indexName": "Listing_production",
+                "indexName": "Listing_production_date_added_desc",
                 "params": params_str,
             }
         ]
