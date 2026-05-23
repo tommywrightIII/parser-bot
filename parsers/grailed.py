@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import urllib.parse
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -50,8 +51,6 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "Referer": "https://www.grailed.com/",
     }
 
-    # Grailed использует Algolia для поиска
-    # Публичный API key берём из их JS
     algolia_url = "https://mnrwefss2q-dsn.algolia.net/1/indexes/*/queries"
     algolia_params = {
         "x-algolia-agent": "Algolia for JavaScript (4.14.2); Browser (lite)",
@@ -59,13 +58,15 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "x-algolia-application-id": "MNRWEFSS2Q",
     }
 
-    # Строим фильтры
-    filters = ["sold_at IS NULL"]  # только в продаже
+    # Числовые фильтры для цены (в центах)
+    numeric_filters = []
     if min_price > 0:
-        filters.append(f"price_i >= {min_price * 100}")  # цена в центах
+        numeric_filters.append(f"price_i >= {min_price * 100}")
     if max_price < 999999:
-        filters.append(f"price_i <= {max_price * 100}")
+        numeric_filters.append(f"price_i <= {max_price * 100}")
 
+    # Фильтры атрибутов
+    facet_filters = []
     condition_map = {
         "new": "is_new",
         "like_new": "gently_used",
@@ -73,40 +74,29 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "fair": "worn",
     }
     if condition and condition in condition_map:
-        filters.append(f"condition:{condition_map[condition]}")
+        facet_filters.append([f"condition:{condition_map[condition]}"])
+
+    params_dict = {
+        "query": query,
+        "hitsPerPage": min(limit, 40),
+        "page": 0,
+        "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
+    }
+    if numeric_filters:
+        params_dict["numericFilters"] = ",".join(numeric_filters)
+    if facet_filters:
+        params_dict["facetFilters"] = str(facet_filters)
+
+    params_str = urllib.parse.urlencode(params_dict)
 
     payload = {
         "requests": [
             {
                 "indexName": "Listing_production",
-                "params": {
-                    "query": query,
-                    "hitsPerPage": limit,
-                    "page": 0,
-                    "filters": " AND ".join(filters),
-                    "attributesToRetrieve": [
-                        "id", "title", "price_i", "condition",
-                        "cover_photo", "user", "designer_names",
-                        "size", "created_at", "slug"
-                    ],
-                }
+                "params": params_str,
             }
         ]
     }
-
-    # Конвертируем payload params в строку
-    import urllib.parse
-    requests_with_string_params = []
-    for req in payload["requests"]:
-        params_str = urllib.parse.urlencode({
-            k: v if not isinstance(v, list) else ",".join(v)
-            for k, v in req["params"].items()
-        })
-        requests_with_string_params.append({
-            "indexName": req["indexName"],
-            "params": params_str
-        })
-    payload["requests"] = requests_with_string_params
 
     logging.info(f"[Grailed] Поиск: {query}, лимит: {limit}")
 
@@ -128,7 +118,6 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                         try:
                             item_id = str(hit.get("id", ""))
                             name = hit.get("title", "")
-                            # Цена в центах → доллары
                             price = int(hit.get("price_i", 0)) // 100
                             brand = ", ".join(hit.get("designer_names", [])) if hit.get("designer_names") else ""
                             item_size = hit.get("size", "") or _extract_size(name)
@@ -137,13 +126,11 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                             slug = hit.get("slug", item_id)
                             item_url = f"https://www.grailed.com/listings/{slug}"
 
-                            # Картинка
                             cover = hit.get("cover_photo", {})
                             image_url = ""
                             if isinstance(cover, dict):
                                 image_url = cover.get("url", "")
 
-                            # Продавец
                             user = hit.get("user", {})
                             seller = user.get("username", "") if isinstance(user, dict) else ""
 
@@ -154,7 +141,6 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                             if max_price < 999999 and price > max_price:
                                 continue
 
-                            # Дата
                             created_at = None
                             if hit.get("created_at"):
                                 try:
