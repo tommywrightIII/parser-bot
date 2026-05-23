@@ -539,6 +539,12 @@ async def _run_search(message: Message, state: FSMContext):
     user_id = str(message.chat.id)
     _last_search[user_id] = data.copy()
 
+    # Для Grailed сбрасываем историю при каждом поиске
+    if platform == "grailed" and user_id in _shown_items:
+        grailed_keys = [k for k in _shown_items[user_id] if k.startswith("grailed_")]
+        for k in grailed_keys:
+            _shown_items[user_id].discard(k)
+
     fetch_count = 100 if result_count == 9999 else result_count * 3
     display_name = category_name if category_name else query
 
