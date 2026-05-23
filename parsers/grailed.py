@@ -33,6 +33,27 @@ def _extract_size(name: str) -> Optional[str]:
             return match.group(1)
     return None
 
+US_TO_EU = {
+    "4": "36", "4.5": "36.5", "5": "37", "5.5": "37.5",
+    "6": "38", "6.5": "38.5", "7": "40", "7.5": "40.5",
+    "8": "41", "8.5": "42", "9": "42.5", "9.5": "43",
+    "10": "44", "10.5": "44.5", "11": "45", "11.5": "45.5",
+    "12": "46", "12.5": "47", "13": "47.5", "14": "48.5",
+}
+
+def _convert_size(size: str) -> str:
+    if not size:
+        return size
+    if "EU" in str(size).upper():
+        return size
+    match = re.search(r'(\d+\.?\d*)', str(size))
+    if match:
+        num = match.group(1)
+        eu = US_TO_EU.get(num)
+        if eu:
+            return f"US {num} / EU {eu}"
+    return size
+
 CONDITION_MAP = {
     "is_new": "10/10 Новый",
     "gently_used": "9/10 Почти новый",
@@ -61,9 +82,9 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     # Числовые фильтры для цены (в центах)
     numeric_filters = []
     if min_price > 0:
-        numeric_filters.append(f"price_i >= {min_price * 100}")
+        numeric_filters.append(f"price_i >= {min_price}")
     if max_price < 999999:
-        numeric_filters.append(f"price_i <= {max_price * 100}")
+        numeric_filters.append(f"price_i <= {max_price}")
 
     # Фильтры атрибутов
     facet_filters = []
@@ -118,9 +139,9 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                         try:
                             item_id = str(hit.get("id", ""))
                             name = hit.get("title", "")
-                            price = int(hit.get("price_i", 0)) // 100
+                            price = int(hit.get("price_i", 0))
                             brand = ", ".join(hit.get("designer_names", [])) if hit.get("designer_names") else ""
-                            item_size = hit.get("size", "") or _extract_size(name)
+                            item_size = _convert_size(hit.get("size", "") or _extract_size(name) or "")
                             cond_raw = hit.get("condition", "")
                             condition_str = CONDITION_MAP.get(cond_raw, cond_raw)
                             slug = hit.get("slug", item_id)
