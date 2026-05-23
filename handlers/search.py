@@ -12,6 +12,7 @@ from aiogram.filters import Command
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
+from parsers.grailed import search_grailed, GrailedItem
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -20,11 +21,13 @@ _shown_items: dict = {}
 _cancelled: set = set()
 _last_search: dict = {}
 _cached_rate = {"rate": 0.62, "date": None}
+_cached_usd_rate = {"rate": 90.0, "date": None}
 
 PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
     "yahoo": "Yahoo Auctions 🇯🇵",
     "bunjang": "Bunjang 🇰🇷",
+    "grailed": "Grailed 🇺🇸",
 }
 
 
@@ -69,6 +72,30 @@ async def _get_krw_rate() -> float:
     return 0.067
 
 
+async def _get_usd_rate() -> float:
+    import datetime
+    today = datetime.date.today().isoformat()
+    if _cached_usd_rate["date"] == today:
+        return _cached_usd_rate["rate"]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://www.cbr.ru/scripts/XML_daily.asp", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                text = await resp.text(encoding="windows-1251")
+                root = ET.fromstring(text)
+                for valute in root.findall("Valute"):
+                    char_code = valute.find("CharCode")
+                    if char_code is not None and char_code.text == "USD":
+                        value = valute.find("Value").text.replace(",", ".")
+                        nominal = int(valute.find("Nominal").text)
+                        rate = float(value) / nominal
+                        _cached_usd_rate["rate"] = rate
+                        _cached_usd_rate["date"] = today
+                        return rate
+    except Exception as e:
+        logging.warning(f"Ошибка получения курса USD: {e}")
+    return _cached_usd_rate["rate"]
+
+
 class SearchForm(StatesGroup):
     choosing_search_type = State()
     choosing_platform = State()
@@ -99,6 +126,7 @@ def platform_keyboard():
         [InlineKeyboardButton(text="Mercari 🇯🇵", callback_data="platform_mercari")],
         [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
         [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
+        [InlineKeyboardButton(text="Grailed 🇺🇸", callback_data="platform_grailed")],
     ])
 
 
@@ -262,7 +290,7 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(SearchForm.choosing_bunjang_category)
-    elif mode == "category" and platform not in ["bunjang"]:
+    elif mode == "category" and platform not in ["bunjang", "grailed"]:
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
             reply_markup=category_group_keyboard(),
@@ -391,7 +419,7 @@ async def process_condition(callback: CallbackQuery, state: FSMContext):
     await state.update_data(condition=condition)
     await callback.message.edit_text(f"🏷 Состояние: <b>{cond_labels.get(cond)}</b>", parse_mode="HTML")
     await callback.message.answer(
-        "💰 Укажи диапазон цен (или пропусти):\n<i>Для Bunjang в вонах (KRW), для Japan в йенах</i>",
+        "💰 Укажи диапазон цен (или пропусти):\n<i>Для Bunjang в вонах (KRW), для Japan в йенах, для Grailed в долларах</i>",
         reply_markup=skip_keyboard(), parse_mode="HTML"
     )
     await state.set_state(SearchForm.entering_price)
@@ -410,7 +438,7 @@ async def process_price(message: Message, state: FSMContext):
         else:
             max_price = int(text)
     except ValueError:
-        await message.answer("⚠️ Неверный формат. Используй: 3000-15000")
+        await message.answer("⚠️ Неверный формат. Используй: 100-500")
         return
     await state.update_data(min_price=min_price, max_price=max_price)
     await message.answer("📅 Фильтр по дате:", reply_markup=date_keyboard())
@@ -481,6 +509,7 @@ async def _run_search(message: Message, state: FSMContext):
 
     yen_rate = await _get_yen_rate()
     krw_rate = await _get_krw_rate()
+    usd_rate = await _get_usd_rate()
 
     tasks, labels = [], []
     if platform == "mercari":
@@ -492,6 +521,9 @@ async def _run_search(message: Message, state: FSMContext):
     elif platform == "bunjang":
         tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
+    elif platform == "grailed":
+        tasks.append(search_grailed(query, min_price, max_price, condition, size, fetch_count))
+        labels.append("grailed")
 
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
     await status_msg.delete()
@@ -526,16 +558,24 @@ async def _run_search(message: Message, state: FSMContext):
                 continue
 
             if cutoff_time and hasattr(item, "created_at") and item.created_at:
-                if item.created_at < cutoff_time:
+                if item.created_at.replace(tzinfo=None) < cutoff_time:
                     continue
 
             _shown_items[user_id].add(item_uid)
 
-            rate = krw_rate if label == "bunjang" else yen_rate
-            currency = "₩" if label == "bunjang" else "¥"
+            if label == "bunjang":
+                rate = krw_rate
+                currency = "₩"
+            elif label == "grailed":
+                rate = usd_rate
+                currency = "$"
+            else:
+                rate = yen_rate
+                currency = "¥"
+
             text = _format_item(item, label, rate, currency)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url if item.url else "https://fril.jp")],
+                [InlineKeyboardButton(text="🔗 Открыть на сайте", url=item.url)],
             ])
 
             if item.image_url:
@@ -572,6 +612,7 @@ def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") 
         "mercari": "🇯🇵 Mercari",
         "yahoo": "🇯🇵 Yahoo",
         "bunjang": "🇰🇷 Bunjang",
+        "grailed": "🇺🇸 Grailed",
     }
     rub_price = int(item.price * rate)
     lines = [
