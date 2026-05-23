@@ -12,7 +12,7 @@ from aiogram.filters import Command
 from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
-from parsers.grailed import search_grailed, GrailedItem
+from parsers.grailed import search_grailed, GrailedItem, GRAILED_CATEGORIES
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -102,6 +102,7 @@ class SearchForm(StatesGroup):
     entering_query = State()
     choosing_category = State()
     choosing_bunjang_category = State()
+    choosing_grailed_category = State()
     entering_size = State()
     entering_condition = State()
     entering_price = State()
@@ -150,6 +151,14 @@ def category_keyboard(group_name: str):
     if row:
         buttons.append(row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def grailed_category_keyboard():
+    buttons = []
+    for key, val in GRAILED_CATEGORIES.items():
+        buttons.append([InlineKeyboardButton(text=val["name"], callback_data=f"gcat_{key}")])
+    buttons.append([InlineKeyboardButton(text="⏭ Все категории", callback_data="gcat_skip")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -290,6 +299,13 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(SearchForm.choosing_bunjang_category)
+    elif platform == "grailed" and mode == "category":
+        await callback.message.edit_text(
+            f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
+            reply_markup=grailed_category_keyboard(),
+            parse_mode="HTML"
+        )
+        await state.set_state(SearchForm.choosing_grailed_category)
     elif mode == "category" and platform not in ["bunjang", "grailed"]:
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
@@ -318,6 +334,30 @@ async def process_bunjang_category(callback: CallbackQuery, state: FSMContext):
             category_id=cat.get("id"),
             category_name=cat.get("name", ""),
             query=cat.get("name", "")
+        )
+        await callback.message.edit_text(f"📂 Категория: <b>{cat.get('name', '')}</b>", parse_mode="HTML")
+
+    await callback.message.answer(
+        "🔎 Введи поисковый запрос (или пропусти):",
+        reply_markup=skip_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(SearchForm.entering_query)
+    await callback.answer()
+
+
+@router.callback_query(SearchForm.choosing_grailed_category, F.data.startswith("gcat_"))
+async def process_grailed_category(callback: CallbackQuery, state: FSMContext):
+    key = callback.data.replace("gcat_", "")
+    if key == "skip":
+        await state.update_data(category_id=None, category_name="", query="")
+        await callback.message.edit_text("📂 Категория: <b>все</b>", parse_mode="HTML")
+    else:
+        cat = GRAILED_CATEGORIES.get(key, {})
+        await state.update_data(
+            category_id=cat.get("category"),
+            category_name=cat.get("name", ""),
+            query=cat.get("query", "")
         )
         await callback.message.edit_text(f"📂 Категория: <b>{cat.get('name', '')}</b>", parse_mode="HTML")
 
