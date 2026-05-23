@@ -90,14 +90,12 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "x-algolia-application-id": "MNRWEFSS2Q",
     }
 
-    # Числовые фильтры для цены (в центах)
     numeric_filters = []
     if min_price > 0:
         numeric_filters.append(f"price_i >= {min_price}")
     if max_price < 999999:
         numeric_filters.append(f"price_i <= {max_price}")
 
-    # Фильтры атрибутов
     facet_filters = []
     condition_map = {
         "new": "is_new",
@@ -124,7 +122,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     payload = {
         "requests": [
             {
-                "indexName": "Listing_production_date_added_desc",
+                "indexName": "Listing_production",
                 "params": params_str,
             }
         ]
