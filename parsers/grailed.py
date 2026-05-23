@@ -124,7 +124,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     payload = {
         "requests": [
             {
-                "indexName": "Listing_production",
+                "indexName": "Listing_production_date_added_desc",
                 "params": params_str,
             }
         ]
