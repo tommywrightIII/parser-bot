@@ -568,7 +568,7 @@ async def _run_search(message: Message, state: FSMContext):
         tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
     elif platform == "grailed":
-        tasks.append(search_grailed(query, min_price, max_price, condition, size, fetch_count))
+        tasks.append(search_grailed(query, min_price, max_price, condition, size, fetch_count, user_id=user_id))
         labels.append("grailed")
 
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
