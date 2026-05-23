@@ -13,6 +13,7 @@ import asyncio
 import logging
 import re
 import urllib.parse
+import random
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -109,7 +110,8 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     params_dict = {
         "query": query,
         "hitsPerPage": min(limit, 40),
-        "page": 0,
+        "page": random.randint(0, 5),
+        "distinct": True,
         "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
     }
     if numeric_filters:
