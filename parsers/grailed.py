@@ -113,6 +113,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "hitsPerPage": min(limit, 40),
         "page": 0,
         "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
+        "ranking": "desc(created_at)",
     }
     if numeric_filters:
         params_dict["numericFilters"] = ",".join(numeric_filters)
@@ -124,7 +125,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     payload = {
         "requests": [
             {
-                "indexName": "Listing_production_date_added_desc",
+                "indexName": "Listing_production",
                 "params": params_str,
             }
         ]
