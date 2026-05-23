@@ -73,7 +73,9 @@ CONDITION_MAP = {
     "worn": "6/10 Среднее",
 }
 
-async def search_grailed(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
+_page_counter = {}
+
+async def search_grailed(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None, user_id=None):
     results = []
 
     headers = {
@@ -121,12 +123,16 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
 
     params_str = urllib.parse.urlencode(params_dict)
 
+    # Счётчик страниц — каждый запрос берёт следующие страницы
+    cache_key = f"{user_id}_{query}"
+    page_offset = _page_counter.get(cache_key, 0)
+    _page_counter[cache_key] = (page_offset + 3) % 30  # крутим по кругу
+
     payload = {
         "requests": [
-            {
-                "indexName": "Listing_production",
-                "params": params_str,
-            }
+            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset}")},
+            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset + 1}")},
+            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset + 2}")},
         ]
     }
 
@@ -143,7 +149,17 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                 logging.info(f"[Grailed] Статус: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json()
-                    hits = data.get("results", [{}])[0].get("hits", [])
+                    hits = []
+                    for r in data.get("results", []):
+                        hits.extend(r.get("hits", []))
+                    # Убираем дубли по ID
+                    seen = set()
+                    unique_hits = []
+                    for h in hits:
+                        if h.get("id") not in seen:
+                            seen.add(h.get("id"))
+                            unique_hits.append(h)
+                    hits = unique_hits
                     logging.info(f"[Grailed] Найдено хитов: {len(hits)}")
 
                     for hit in hits[:limit]:
@@ -151,7 +167,8 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                             item_id = str(hit.get("id", ""))
                             name = hit.get("title", "")
                             price = int(hit.get("price_i", 0))
-                            brand = ", ".join(hit.get("designer_names", [])) if hit.get("designer_names") else ""
+                            dn = hit.get("designer_names", [])
+                            brand = ", ".join(dn) if isinstance(dn, list) and all(len(x) > 1 for x in dn) else (dn if isinstance(dn, str) else "")
                             item_size = _convert_size(hit.get("size", "") or _extract_size(name) or "")
                             cond_raw = hit.get("condition", "")
                             condition_str = CONDITION_MAP.get(cond_raw, cond_raw)
