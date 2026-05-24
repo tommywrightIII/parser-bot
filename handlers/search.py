@@ -13,6 +13,7 @@ from parsers.mercari import search_mercari, format_date
 from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
 from parsers.grailed import search_grailed, GrailedItem, GRAILED_CATEGORIES
+from parsers.secondstreet import search_secondstreet, SecondStreetItem
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
 from config import PROXY_URL
 
@@ -28,6 +29,7 @@ PLATFORM_NAMES = {
     "yahoo": "Yahoo Auctions 🇯🇵",
     "bunjang": "Bunjang 🇰🇷",
     "grailed": "Grailed 🇺🇸",
+    "secondstreet": "2nd Street 🇯🇵",
 }
 
 
@@ -128,6 +130,7 @@ def platform_keyboard():
         [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
         [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
         [InlineKeyboardButton(text="Grailed 🇺🇸", callback_data="platform_grailed")],
+        [InlineKeyboardButton(text="2nd Street 🇯🇵", callback_data="platform_secondstreet")],
     ])
 
 
@@ -306,7 +309,7 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(SearchForm.choosing_grailed_category)
-    elif mode == "category" and platform not in ["bunjang", "grailed"]:
+    elif mode == "category" and platform not in ["bunjang", "grailed", "secondstreet"]:
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\n📂 Выбери категорию:",
             reply_markup=category_group_keyboard(),
@@ -314,6 +317,7 @@ async def process_platform(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(SearchForm.choosing_category)
     else:
+        # secondstreet и остальные в режиме query идут сразу к запросу
         await callback.message.edit_text(
             f"✅ Платформа: <b>{pname}</b>\n\nВведи поисковый запрос:",
             parse_mode="HTML"
@@ -570,10 +574,22 @@ async def _run_search(message: Message, state: FSMContext):
     elif platform == "grailed":
         tasks.append(search_grailed(query, min_price, max_price, condition, size, fetch_count, user_id=user_id))
         labels.append("grailed")
+    elif platform == "secondstreet":
+        connector = aiohttp.TCPConnector(ssl=False)
+        session = aiohttp.ClientSession(connector=connector)
+        tasks.append(search_secondstreet(query, session, proxy=PROXY_URL, max_items=fetch_count, sort_by="arrival"))
+        labels.append("secondstreet")
 
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
     await status_msg.delete()
     await state.clear()
+
+    # Закрываем сессию для secondstreet
+    if platform == "secondstreet":
+        try:
+            await session.close()
+        except Exception:
+            pass
 
     if user_id not in _shown_items:
         _shown_items[user_id] = set()
@@ -599,7 +615,7 @@ async def _run_search(message: Message, state: FSMContext):
             if result_count != 9999 and sent >= result_count:
                 break
 
-            item_uid = f"{label}_{item.id}"
+            item_uid = f"{label}_{item.goods_id if hasattr(item, 'goods_id') else item.id}"
             if item_uid in _shown_items[user_id]:
                 continue
 
@@ -626,8 +642,8 @@ async def _run_search(message: Message, state: FSMContext):
 
             if item.image_url:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(item.image_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    async with aiohttp.ClientSession() as img_session:
+                        async with img_session.get(item.image_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                             if resp.status == 200:
                                 from aiogram.types import BufferedInputFile
                                 photo = BufferedInputFile(await resp.read(), filename="photo.jpg")
@@ -659,7 +675,25 @@ def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") 
         "yahoo": "🇯🇵 Yahoo",
         "bunjang": "🇰🇷 Bunjang",
         "grailed": "🇺🇸 Grailed",
+        "secondstreet": "🇯🇵 2nd Street",
     }
+
+    # SecondStreetItem имеет другую структуру
+    if platform == "secondstreet":
+        rub_price = int(item.price * rate)
+        lines = [
+            f"<b>{platform_icons['secondstreet']}</b>",
+            f"📦 <b>{item.title}</b>",
+            f"💴 <b>{currency}{item.price:,} / ~{rub_price:,}₽</b>",
+        ]
+        if item.brand:
+            lines.append(f"🔖 Бренд: {item.brand}")
+        if item.size:
+            lines.append(f"📐 Размер: {item.size}")
+        if item.condition:
+            lines.append(f"🏷 Состояние: {item.condition}")
+        return "\n".join(lines)
+
     rub_price = int(item.price * rate)
     lines = [
         f"<b>{platform_icons.get(platform, platform)}</b>",
