@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import logging
 import re
 import json
 from dataclasses import dataclass
@@ -22,147 +23,151 @@ class SecondStreetItem:
 
 async def search_secondstreet(
     keyword: str,
-    session: aiohttp.ClientSession,
+    session: aiohttp.ClientSession = None,
     proxy: Optional[str] = None,
     max_items: int = 20,
-    sort_by: str = "arrival",  # arrival = новые, recommend = рекомендуемые
-) -> list[SecondStreetItem]:
-    """
-    Парсер 2ndstreet.jp — японский ресейл магазин
-    sort_by: arrival (новые), recommend, cost-low, cost-high, discount-high
-    """
-    
+    sort_by: str = "arrival",
+) -> list:
+    from aiohttp_socks import ProxyConnector
+
     url = "https://www.2ndstreet.jp/search"
     params = {
         "keyword": keyword,
         "sortBy": sort_by,
     }
-    
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Language": "ja,en;q=0.5",
     }
-    
+
+    logging.info(f"[2ndStreet] Поиск: {keyword}, proxy: {proxy}")
+
     try:
-        async with session.get(
-            url,
-            params=params,
-            headers=headers,
-            proxy=proxy,
-            timeout=aiohttp.ClientTimeout(total=30),
-            ssl=False,
-        ) as resp:
-            if resp.status != 200:
-                print(f"[2ndStreet] HTTP {resp.status}")
-                return []
-            
-            html = await resp.text()
+        if proxy and "socks5" in proxy:
+            connector = ProxyConnector.from_url(proxy, ssl=False)
+        else:
+            connector = aiohttp.TCPConnector(ssl=False)
+
+        async with aiohttp.ClientSession(connector=connector, headers=headers) as sess:
+            async with sess.get(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                logging.info(f"[2ndStreet] Статус: {resp.status}")
+                if resp.status != 200:
+                    logging.error(f"[2ndStreet] HTTP {resp.status}")
+                    return []
+                html = await resp.text()
+                logging.info(f"[2ndStreet] HTML длина: {len(html)}")
+
     except Exception as e:
-        print(f"[2ndStreet] Request error: {e}")
+        logging.error(f"[2ndStreet] Ошибка запроса: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return []
-    
+
     items = []
-    
-    # Метод 1: парсим dataLayer JSON (самый надежный)
-    # Ищем impressions или view_item_list с данными товаров
-    dl_pattern = re.compile(
-        r"dataLayer\.push\(\{[^}]*'event':'impressionsGNW'[^}]*'ecommerce':\{[^}]*'impressions':\[([^\]]+)\]",
-        re.DOTALL
-    )
-    
-    # Проще — ищем все impressions блоки
-    impressions_pattern = re.compile(
-        r"'impressions':\[(.+?)\]\}", re.DOTALL
-    )
-    
-    all_impressions = []
-    for match in impressions_pattern.finditer(html):
-        try:
-            # Конвертируем JS объект в JSON
-            js_obj = match.group(1)
-            # Заменяем одиночные кавычки на двойные
-            js_obj = re.sub(r"'([^']+)':", r'"\1":', js_obj)
-            js_obj = re.sub(r":\s*'([^']*)'", r': "\1"', js_obj)
-            js_obj = js_obj.rstrip(",")
-            parsed = json.loads(f"[{js_obj}]")
-            all_impressions.extend(parsed)
-        except Exception:
-            pass
-    
-    # Метод 2: парсим HTML карточки
-    card_pattern = re.compile(
-        r'<li[^>]+goodsid="(\d+)"[^>]+>.*?'
-        r'<a href="(/goods/detail/goodsId/\d+/shopsId/\d+)".*?>'
-        r'.*?<img src="([^"]+)".*?>'
-        r'.*?<p class="itemCard_brand">([^<]+)</p>'
-        r'.*?<p class="itemCard_name">([^<]+)</p>'
-        r'(?:.*?<p class="itemCard_size">([^<]*)</p>)?'
-        r'(?:.*?<p class="itemCard_status">([^<]*)</p>)?'
-        r'.*?<p class="itemCard_price[^"]*">¥([\d,]+)',
-        re.DOTALL
-    )
-    
     seen_ids = set()
-    
-    for m in card_pattern.finditer(html):
-        goods_id = m.group(1)
-        if goods_id in seen_ids:
-            continue
-        seen_ids.add(goods_id)
-        
-        item_url = f"https://www.2ndstreet.jp{m.group(2)}"
-        image_url = m.group(3)
-        brand = m.group(4).strip()
-        name = m.group(5).strip()
-        size = m.group(6).strip() if m.group(6) else None
-        if size:
-            size = size.replace("サイズ", "").strip()
-        condition = m.group(7).strip() if m.group(7) else None
-        if condition:
-            condition = condition.replace("商品の状態 : ", "").strip()
-        price_str = m.group(8).replace(",", "")
-        price = int(price_str)
-        
-        # Формируем название из бренда + имени
-        full_title = f"{brand} {name}" if brand not in name else name
-        
-        item = SecondStreetItem(
-            title=full_title,
-            price=price,
-            currency="¥",
-            url=item_url,
-            image_url=image_url,
-            brand=brand,
-            size=size,
-            condition=condition,
-            goods_id=goods_id,
+
+    # Метод 1: ищем JSON данные товаров в __NEXT_DATA__ или dataLayer
+    next_data_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if next_data_match:
+        logging.info("[2ndStreet] Найден __NEXT_DATA__")
+        try:
+            data = json.loads(next_data_match.group(1))
+            # Рекурсивно ищем товары
+            items_data = _find_items(data)
+            if items_data:
+                logging.info(f"[2ndStreet] Товаров в JSON: {len(items_data)}")
+                for item in items_data[:max_items]:
+                    try:
+                        goods_id = str(item.get("goodsId", item.get("id", "")))
+                        if not goods_id or goods_id in seen_ids:
+                            continue
+                        seen_ids.add(goods_id)
+                        price = int(item.get("price", item.get("sellPrice", 0)))
+                        title = item.get("goodsName", item.get("name", item.get("title", "")))
+                        brand = item.get("brandName", item.get("brand", ""))
+                        image_url = item.get("imagePath", item.get("imageUrl", item.get("image", "")))
+                        if image_url and image_url.startswith("//"):
+                            image_url = "https:" + image_url
+                        size = item.get("size", item.get("sizeName", ""))
+                        condition = item.get("goodsStatus", item.get("condition", ""))
+                        item_url = f"https://www.2ndstreet.jp/goods/detail/goodsId/{goods_id}"
+
+                        items.append(SecondStreetItem(
+                            title=title,
+                            price=price,
+                            currency="¥",
+                            url=item_url,
+                            image_url=image_url,
+                            brand=brand,
+                            size=size,
+                            condition=condition,
+                            goods_id=goods_id,
+                        ))
+                    except Exception as e:
+                        logging.warning(f"[2ndStreet] Ошибка элемента JSON: {e}")
+        except Exception as e:
+            logging.warning(f"[2ndStreet] Ошибка парсинга __NEXT_DATA__: {e}")
+
+    # Метод 2: парсим HTML карточки
+    if not items:
+        logging.info("[2ndStreet] Пробуем HTML парсинг")
+        card_pattern = re.compile(
+            r'goodsid="(\d+)".*?'
+            r'href="(/goods/detail/[^"]+)".*?'
+            r'<img[^>]+src="([^"]+)".*?'
+            r'(?:itemCard_brand[^>]*>([^<]*)</p>)?.*?'
+            r'(?:itemCard_name[^>]*>([^<]*)</p>)?.*?'
+            r'(?:itemCard_size[^>]*>([^<]*)</p>)?.*?'
+            r'¥([\d,]+)',
+            re.DOTALL
         )
-        items.append(item)
-        
-        if len(items) >= max_items:
-            break
-    
+        for m in card_pattern.finditer(html):
+            goods_id = m.group(1)
+            if goods_id in seen_ids:
+                continue
+            seen_ids.add(goods_id)
+            try:
+                price = int(m.group(7).replace(",", ""))
+                items.append(SecondStreetItem(
+                    title=f"{(m.group(4) or '').strip()} {(m.group(5) or '').strip()}".strip(),
+                    price=price,
+                    currency="¥",
+                    url=f"https://www.2ndstreet.jp{m.group(2)}",
+                    image_url=m.group(3),
+                    brand=(m.group(4) or "").strip(),
+                    size=(m.group(6) or "").strip() or None,
+                    condition=None,
+                    goods_id=goods_id,
+                ))
+                if len(items) >= max_items:
+                    break
+            except Exception as e:
+                logging.warning(f"[2ndStreet] Ошибка HTML элемента: {e}")
+
+    # Логируем часть HTML для отладки если ничего не нашли
+    if not items:
+        logging.warning(f"[2ndStreet] Ничего не найдено. HTML начало: {html[:1000]}")
+
+    logging.info(f"[2ndStreet] Найдено: {len(items)}")
     return items
 
 
-async def _test():
-    proxy = "socks5://31.130.132.149:1080"
-    connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        items = await search_secondstreet(
-            keyword="nike",
-            session=session,
-            proxy=proxy,
-            sort_by="arrival",
-        )
-        print(f"Найдено: {len(items)}")
-        for item in items[:5]:
-            print(f"  [{item.brand}] {item.title[:50]}")
-            print(f"    Цена: {item.currency}{item.price}")
-            print(f"    Размер: {item.size}, Состояние: {item.condition}")
-            print(f"    URL: {item.url}")
-
-
-if __name__ == "__main__":
-    asyncio.run(_test())
+def _find_items(data, depth=0):
+    if depth > 8:
+        return None
+    if isinstance(data, list) and len(data) > 0:
+        first = data[0]
+        if isinstance(first, dict) and any(k in first for k in ["goodsId", "goodsName", "sellPrice", "price"]):
+            return data
+    if isinstance(data, dict):
+        for key, value in data.items():
+            result = _find_items(value, depth + 1)
+            if result:
+                return result
+    return None
