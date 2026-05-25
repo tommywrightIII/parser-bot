@@ -61,6 +61,15 @@ async def search_secondstreet(
             connector = aiohttp.TCPConnector(ssl=False)
 
         async with aiohttp.ClientSession(connector=connector, headers=headers) as sess:
+            # Сначала заходим на главную чтобы получить куки
+            try:
+                async with sess.get("https://www.2ndstreet.jp/", timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    logging.info(f"[2ndStreet] Главная: {r.status}, куки: {len(sess.cookie_jar)}")
+            except Exception as e:
+                logging.warning(f"[2ndStreet] Ошибка главной: {e}")
+
+            await asyncio.sleep(1)
+
             async with sess.get(
                 url,
                 params=params,
@@ -68,7 +77,8 @@ async def search_secondstreet(
             ) as resp:
                 logging.info(f"[2ndStreet] Статус: {resp.status}")
                 if resp.status != 200:
-                    logging.error(f"[2ndStreet] HTTP {resp.status}")
+                    text_err = await resp.text()
+                    logging.error(f"[2ndStreet] HTTP {resp.status}: {text_err[:200]}")
                     return []
                 html = await resp.text()
                 logging.info(f"[2ndStreet] HTML длина: {len(html)}")
