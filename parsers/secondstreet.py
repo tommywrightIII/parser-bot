@@ -28,6 +28,9 @@ async def search_secondstreet(
     max_items: int = 20,
     sort_by: str = "arrival",
 ) -> list:
+    import os
+    # Японский прокси для 2ndstreet.jp
+    proxy = os.environ.get("PROXY_URL_JP", proxy)
     from aiohttp_socks import ProxyConnector
 
     url = "https://www.2ndstreet.jp/search"
