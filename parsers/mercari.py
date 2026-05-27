@@ -96,36 +96,16 @@ async def _translate_to_japanese(query: str) -> str:
         return query
 
 
-async def search_mercari(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
+async def _search_single(query, min_price, max_price, limit, proxy_config, category_id) -> list:
+    """Один поисковый запрос через браузер"""
     results = []
-
-    translated_query = await _translate_to_japanese(query)
-
-    proxy_url = os.environ.get("PROXY_URL")
-    logging.info(f"[Mercari] Запуск поиска: {query} → {translated_query}, прокси: {proxy_url}")
-
-    proxy_config = None
-    if proxy_url:
-        match = re.match(r'(https?|socks5)://([^:@]+):([^@]+)@([^:]+):(\d+)', proxy_url)
-        if match:
-            proto, user, password, host, port = match.groups()
-            proxy_config = {
-                "server": f"{proto}://{host}:{port}",
-                "username": user,
-                "password": password,
-            }
-        else:
-            proxy_config = {"server": proxy_url}
-
     try:
         async with async_playwright() as p:
-            logging.info("[Mercari] Запускаем браузер...")
             browser = await p.chromium.launch(
                 headless=True,
                 proxy=proxy_config,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            logging.info("[Mercari] Браузер запущен")
             context = await browser.new_context(
                 locale="ja-JP",
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -142,18 +122,15 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                     try:
                         data = await response.json()
                         items = data.get("items", [])
-                        logging.info(f"[Mercari] API ответил, items: {len(items)}")
                         if items and not api_future.done():
                             api_future.set_result(items)
                     except Exception as e:
                         logging.error(f"[Mercari] Ошибка парсинга API: {e}")
-                elif "mercari" in response.url and response.status not in [200, 301, 302, 304]:
-                    logging.info(f"[Mercari] Ответ {response.status}: {response.url[:80]}")
 
             page = await context.new_page()
             page.on("response", handle_response)
 
-            url = f"https://jp.mercari.com/search?keyword={translated_query}&status=on_sale&sort=created_time&order=desc"
+            url = f"https://jp.mercari.com/search?keyword={query}&status=on_sale&sort=created_time&order=desc"
             if category_id:
                 url += f"&categoryId={category_id}"
             if min_price > 0:
@@ -161,14 +138,10 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
             if max_price < 999999:
                 url += f"&price_max={max_price}"
 
-            logging.info(f"[Mercari] Открываем: {url}")
             await page.goto(url, timeout=60000, wait_until="commit")
-            logging.info("[Mercari] Страница загружена, ждём API...")
 
             try:
                 items = await asyncio.wait_for(api_future, timeout=45)
-                logging.info(f"[Mercari] Получено: {len(items)}")
-
                 for item in items[:limit]:
                     thumbs = item.get("thumbnails", [])
                     name = item.get("name", "")
@@ -192,15 +165,60 @@ async def search_mercari(query, min_price=0, max_price=999999, condition=None, s
                         created_at=created_at,
                     ))
             except asyncio.TimeoutError:
-                logging.info("[Mercari] Таймаут ожидания API")
+                logging.info(f"[Mercari] Таймаут для запроса: {query}")
 
             await browser.close()
-
     except Exception as e:
-        logging.error(f"[Mercari] Ошибка: {e}")
-        logging.error(traceback.format_exc())
+        logging.error(f"[Mercari] Ошибка запроса '{query}': {e}")
 
-    logging.info(f"[Mercari] Найдено: {len(results)}")
+    return results
+
+
+async def search_mercari(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None):
+    translated_query = await _translate_to_japanese(query)
+
+    proxy_url = os.environ.get("PROXY_URL")
+    logging.info(f"[Mercari] Запуск поиска: {query} → {translated_query}, прокси: {proxy_url}")
+
+    proxy_config = None
+    if proxy_url:
+        match = re.match(r'(https?|socks5)://([^:@]+):([^@]+)@([^:]+):(\d+)', proxy_url)
+        if match:
+            proto, user, password, host, port = match.groups()
+            proxy_config = {
+                "server": f"{proto}://{host}:{port}",
+                "username": user,
+                "password": password,
+            }
+        else:
+            proxy_config = {"server": proxy_url}
+
+    # Если перевод отличается от оригинала — делаем два запроса параллельно
+    queries_to_search = [translated_query]
+    if translated_query != query and not _is_japanese(query):
+        queries_to_search.append(query)
+        logging.info(f"[Mercari] Двойной поиск: {translated_query} + {query}")
+
+    # Запускаем поиски параллельно
+    tasks = [_search_single(q, min_price, max_price, limit, proxy_config, category_id) for q in queries_to_search]
+    all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Объединяем результаты без дублей
+    seen_ids = set()
+    combined = []
+    for res in all_results:
+        if isinstance(res, Exception):
+            continue
+        for item in res:
+            if item.id not in seen_ids:
+                seen_ids.add(item.id)
+                combined.append(item)
+
+    # Сортируем по дате — свежие первые
+    combined.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
+    results = combined[:limit]
+
+    logging.info(f"[Mercari] Найдено: {len(results)} (из {len(combined)} уникальных)")
     return results
 
 
