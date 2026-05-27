@@ -89,7 +89,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
     algolia_url = "https://mnrwefss2q-dsn.algolia.net/1/indexes/*/queries"
     algolia_params = {
         "x-algolia-agent": "Algolia for JavaScript (4.14.2); Browser (lite)",
-        "x-algolia-api-key": "ODI0NmYzOTBiZWFkYjUyZTMzODNjZTIwNzFmYTliZjhiNTIzNGIyNDkxOTdkYzgxOTc4M2I1NGZkYWZlZWMzZnZhbGlkVW50aWw9MTc3OTYzOTkxNiZ1c2VyVG9rZW49OTQuMjI4LjIxMy4yMDM=",
+        "x-algolia-api-key": "c89dbaddf15fe70e1941a109bf7c2a3d",
         "x-algolia-application-id": "MNRWEFSS2Q",
     }
 
