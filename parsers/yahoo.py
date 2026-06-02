@@ -150,21 +150,21 @@ async def search_yahoo(query, min_price=0, max_price=999999, condition=None, siz
 
     logging.info(f"[Yahoo] Запуск поиска: {query} → {translated_query}")
 
-    # Двойной поиск если есть перевод
-    queries_to_search = [translated_query]
-    if translated_query != query and not _is_japanese(query):
-        queries_to_search.append(query)
-        logging.info(f"[Yahoo] Двойной поиск: {translated_query} + {query}")
-
-    tasks = [_search_single_yahoo(q, min_price, max_price, limit, proxy_config) for q in queries_to_search]
-    all_results = await asyncio.gather(*tasks, return_exceptions=True)
-
     seen_ids = set()
     combined = []
-    for res in all_results:
-        if isinstance(res, Exception):
-            continue
-        for item in res:
+
+    # Сначала японский запрос
+    res1 = await _search_single_yahoo(translated_query, min_price, max_price, limit, proxy_config)
+    for item in res1:
+        if item.id not in seen_ids:
+            seen_ids.add(item.id)
+            combined.append(item)
+
+    # Потом английский — только если перевод отличается и нужно ещё результатов
+    if translated_query != query and not _is_japanese(query) and len(combined) < limit:
+        logging.info(f"[Yahoo] Дополнительный поиск на английском: {query}")
+        res2 = await _search_single_yahoo(query, min_price, max_price, limit, proxy_config)
+        for item in res2:
             if item.id not in seen_ids:
                 seen_ids.add(item.id)
                 combined.append(item)
