@@ -85,7 +85,7 @@ async def search_bunjang(query, min_price=0, max_price=999999, condition=None, s
     params = {
         "q": translated_query,
         "page": 0,
-        "n": limit * 2,
+        "n": min(limit * 2, 100),  # Bunjang не принимает больше 200
         "order": "date",
     }
 
