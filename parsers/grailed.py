@@ -13,7 +13,6 @@ import asyncio
 import logging
 import re
 import urllib.parse
-import random
 from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -75,6 +74,32 @@ CONDITION_MAP = {
 
 _page_counter = {}
 
+def _make_params(query, page, limit, min_price, max_price, condition):
+    condition_map = {
+        "new": "is_new",
+        "like_new": "gently_used",
+        "good": "used",
+        "fair": "worn",
+    }
+    params_dict = {
+        "query": query,
+        "hitsPerPage": min(limit, 40),
+        "page": page,
+        "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
+    }
+    numeric_filters = []
+    if min_price > 0:
+        numeric_filters.append(f"price_i >= {min_price}")
+    if max_price < 999999:
+        numeric_filters.append(f"price_i <= {max_price}")
+    if numeric_filters:
+        params_dict["numericFilters"] = ",".join(numeric_filters)
+
+    if condition and condition in condition_map:
+        params_dict["facetFilters"] = str([[f"condition:{condition_map[condition]}"]])
+
+    return urllib.parse.urlencode(params_dict)
+
 async def search_grailed(query, min_price=0, max_price=999999, condition=None, size=None, limit=10, proxy=None, category_id=None, user_id=None):
     results = []
 
@@ -93,50 +118,20 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
         "x-algolia-application-id": "MNRWEFSS2Q",
     }
 
-    numeric_filters = []
-    if min_price > 0:
-        numeric_filters.append(f"price_i >= {min_price}")
-    if max_price < 999999:
-        numeric_filters.append(f"price_i <= {max_price}")
-
-    facet_filters = []
-    condition_map = {
-        "new": "is_new",
-        "like_new": "gently_used",
-        "good": "used",
-        "fair": "worn",
-    }
-    if condition and condition in condition_map:
-        facet_filters.append([f"condition:{condition_map[condition]}"])
-
-    params_dict = {
-        "query": query,
-        "hitsPerPage": min(limit, 40),
-        "page": random.randint(0, 5),
-        "distinct": True,
-        "attributesToRetrieve": "id,title,price_i,condition,cover_photo,user,designer_names,size,created_at,slug",
-    }
-    if numeric_filters:
-        params_dict["numericFilters"] = ",".join(numeric_filters)
-    if facet_filters:
-        params_dict["facetFilters"] = str(facet_filters)
-
-    params_str = urllib.parse.urlencode(params_dict)
-
-    # Счётчик страниц — каждый запрос берёт следующие страницы
+    # Счётчик страниц
     cache_key = f"{user_id}_{query}"
     page_offset = _page_counter.get(cache_key, 0)
-    _page_counter[cache_key] = (page_offset + 3) % 30  # крутим по кругу
+    _page_counter[cache_key] = (page_offset + 3) % 30
 
     payload = {
         "requests": [
-            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset}")},
-            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset + 1}")},
-            {"indexName": "Listing_production", "params": params_str.replace("page=0", f"page={page_offset + 2}")},
+            {"indexName": "Listing_production", "params": _make_params(query, page_offset, limit, min_price, max_price, condition)},
+            {"indexName": "Listing_production", "params": _make_params(query, page_offset + 1, limit, min_price, max_price, condition)},
+            {"indexName": "Listing_production", "params": _make_params(query, page_offset + 2, limit, min_price, max_price, condition)},
         ]
     }
 
-    logging.info(f"[Grailed] Поиск: {query}, лимит: {limit}")
+    logging.info(f"[Grailed] Поиск: {query}, страницы: {page_offset}-{page_offset+2}, лимит: {limit}")
 
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -152,7 +147,7 @@ async def search_grailed(query, min_price=0, max_price=999999, condition=None, s
                     hits = []
                     for r in data.get("results", []):
                         hits.extend(r.get("hits", []))
-                    # Убираем дубли по ID
+                    # Убираем дубли
                     seen = set()
                     unique_hits = []
                     for h in hits:
