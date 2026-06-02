@@ -83,6 +83,8 @@ def _is_japanese(text: str) -> bool:
 
 
 async def _translate_to_japanese(query: str) -> str:
+    # Убираем переносы строк и лишние пробелы
+    query = " ".join(query.split())
     if _is_japanese(query):
         return query
     try:
