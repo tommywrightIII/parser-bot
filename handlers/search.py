@@ -213,6 +213,7 @@ def results_count_keyboard(show_all=False):
         InlineKeyboardButton(text="10", callback_data="count_10"),
         InlineKeyboardButton(text="20", callback_data="count_20"),
         InlineKeyboardButton(text="50", callback_data="count_50"),
+        InlineKeyboardButton(text="100", callback_data="count_100"),
     ]]
     if show_all:
         buttons.append([InlineKeyboardButton(text="🔥 Все за час", callback_data="count_all")])
@@ -545,7 +546,7 @@ async def _run_search(message: Message, state: FSMContext):
         for k in grailed_keys:
             _shown_items[user_id].discard(k)
 
-    fetch_count = 100 if result_count == 9999 else result_count * 3
+    fetch_count = 100 if result_count == 9999 else min(result_count * 3, 100)
     display_name = category_name if category_name else query
 
     status_msg = await message.answer(
