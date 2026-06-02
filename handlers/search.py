@@ -372,7 +372,7 @@ async def process_grailed_category(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SearchForm.entering_query)
 async def process_query(message: Message, state: FSMContext):
-    await state.update_data(query=message.text.strip())
+    await state.update_data(query=" ".join(message.text.split()))
     await message.answer("📐 Укажи размер (или пропусти):", reply_markup=skip_keyboard())
     await state.set_state(SearchForm.entering_size)
 
