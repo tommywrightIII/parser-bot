@@ -10,7 +10,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
 from parsers.mercari import search_mercari, format_date
-from parsers.yahoo import search_yahoo, YahooItem
 from parsers.bunjang import search_bunjang, BunjangItem, BUNJANG_CATEGORIES
 from parsers.grailed import search_grailed, GrailedItem, GRAILED_CATEGORIES
 from parsers.categories import CATEGORIES, CATEGORY_GROUPS
@@ -25,7 +24,6 @@ _cached_usd_rate = {"rate": 90.0, "date": None}
 
 PLATFORM_NAMES = {
     "mercari": "Mercari Japan 🇯🇵",
-    "yahoo": "Yahoo Auctions 🇯🇵",
     "bunjang": "Bunjang 🇰🇷",
     "grailed": "Grailed 🇺🇸",
 }
@@ -125,7 +123,6 @@ def search_type_keyboard():
 def platform_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Mercari 🇯🇵", callback_data="platform_mercari")],
-        [InlineKeyboardButton(text="Yahoo Auctions 🇯🇵", callback_data="platform_yahoo")],
         [InlineKeyboardButton(text="Bunjang 🇰🇷", callback_data="platform_bunjang")],
         [InlineKeyboardButton(text="Grailed 🇺🇸", callback_data="platform_grailed")],
     ])
@@ -562,9 +559,6 @@ async def _run_search(message: Message, state: FSMContext):
     if platform == "mercari":
         tasks.append(search_mercari(query, min_price, max_price, condition, size, fetch_count, PROXY_URL, category_id=category_id))
         labels.append("mercari")
-    elif platform == "yahoo":
-        tasks.append(search_yahoo(query, min_price, max_price, condition, size, fetch_count, PROXY_URL))
-        labels.append("yahoo")
     elif platform == "bunjang":
         tasks.append(search_bunjang(query, min_price, max_price, condition, size, fetch_count, category_id=category_id))
         labels.append("bunjang")
@@ -657,7 +651,6 @@ async def _run_search(message: Message, state: FSMContext):
 def _format_item(item, platform: str, rate: float = 0.62, currency: str = "¥") -> str:
     platform_icons = {
         "mercari": "🇯🇵 Mercari",
-        "yahoo": "🇯🇵 Yahoo",
         "bunjang": "🇰🇷 Bunjang",
         "grailed": "🇺🇸 Grailed",
     }
